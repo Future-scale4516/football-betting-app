@@ -86,20 +86,28 @@ def score_matrix(home, away, model, max_goals=8):
     grid /= grid.sum()  # renormalise after the tau adjustment
     return grid
 
+def goals_over_line(grid, line: float):
+    """Probability of total goals being over/under any line (1.5, 2.5, etc.)
+    off the same grid — no separate model needed per line."""
+    goals = np.add.outer(np.arange(grid.shape[0]), np.arange(grid.shape[1]))
+    over = grid[goals > line].sum()
+    return over, 1 - over
+
+
 def derive_markets(grid):
     """Everything below reads off the SAME grid — no separate models."""
     home_win = np.tril(grid, -1).sum()
     draw = np.trace(grid)
     away_win = np.triu(grid, 1).sum()
 
-    goals = np.add.outer(np.arange(grid.shape[0]), np.arange(grid.shape[1]))
-    over_2_5 = grid[goals > 2].sum()  # >2 goals total
-    under_2_5 = 1 - over_2_5
+    over_1_5, under_1_5 = goals_over_line(grid, 1.5)
+    over_2_5, under_2_5 = goals_over_line(grid, 2.5)
 
     btts_yes = grid[1:, 1:].sum()
 
     return {
         "1X2": {"home": home_win, "draw": draw, "away": away_win},
+        "O/U 1.5": {"over": over_1_5, "under": under_1_5},
         "O/U 2.5": {"over": over_2_5, "under": under_2_5},
         "BTTS": {"yes": btts_yes, "no": 1 - btts_yes},
         "correct_score_grid": grid,  # top N scorelines for correct-score market
