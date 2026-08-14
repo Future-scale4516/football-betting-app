@@ -73,13 +73,72 @@ TEAM_NAME_MAPS = {
         "Hull City": "Hull",
         "Coventry City": "Coventry",
     },
-    "EFL Championship": {},
+    "EFL Championship": {
+        # NOTE: several of these (Lincoln City, Cardiff City, Wrexham AFC,
+        # West Ham United, Burnley) may be genuinely promoted/relegated with
+        # no Championship history in last season's data — if they still get
+        # skipped after this update, that's the real cold-start case, not
+        # a naming miss.
+        "Bolton Wanderers": "Bolton",
+        "Preston North End": "Preston",
+        "Charlton Athletic": "Charlton",
+        "Derby County": "Derby",
+        "Lincoln City": "Lincoln",
+        "Norwich City": "Norwich",
+        "West Bromwich Albion": "West Brom",
+        "Queens Park Rangers": "QPR",
+        "Stoke City": "Stoke",
+        "Swansea City": "Swansea",
+        "Birmingham City": "Birmingham",
+        "West Ham United": "West Ham",
+        "Burnley FC": "Burnley",
+        "Cardiff City": "Cardiff",
+        "Wrexham AFC": "Wrexham",
+    },
     "League One": {},
     "League Two": {},
-    "Bundesliga": {},
-    "Serie A": {},
-    "La Liga": {},
-    "Ligue 1": {},
+    "Bundesliga": {
+        "VfB Stuttgart": "Stuttgart",
+        "1. FC Köln": "FC Koln",
+        "TSG Hoffenheim": "Hoffenheim",
+        "Borussia Monchengladbach": "M'gladbach",
+        "Eintracht Frankfurt": "Ein Frankfurt",
+        "FSV Mainz 05": "Mainz",
+        "Borussia Dortmund": "Dortmund",
+        "SC Freiburg": "Freiburg",
+        "FC Schalke 04": "Schalke 04",
+        # Elversberg, SC Paderborn, Hamburger SV — likely genuinely promoted
+        # with no top-flight history in last season's data, not a name miss.
+    },
+    "Serie A": {
+        "Inter Milan": "Inter",
+        "AC Milan": "Milan",
+        "Atalanta BC": "Atalanta",
+        "AS Roma": "Roma",
+        # Frosinone, Venezia — likely genuinely relegated/promoted, not a
+        # name miss.
+    },
+    "La Liga": {
+        "Alavés": "Alaves",
+        "Real Racing Club de Santander": "Santander",
+        "Atlético Madrid": "Ath Madrid",
+        "Real Betis": "Betis",
+        "Real Sociedad": "Sociedad",
+        "Athletic Bilbao": "Ath Bilbao",
+        "Celta Vigo": "Celta",
+        "Espanyol": "Espanol",
+        "Deportivo La Coruña": "La Coruna",
+        "CA Osasuna": "Osasuna",
+        # Elche, Rayo Vallecano — check after re-run, may be promoted.
+    },
+    "Ligue 1": {
+        "RC Lens": "Lens",
+        "Le Mans FC": "Le Mans",
+        "Troyes": "Troyes",
+        "AS Monaco": "Monaco",
+        "Paris Saint Germain": "Paris SG",
+        # Auxerre, Brest, Lorient — check after re-run, may be promoted.
+    },
 }
 
 
