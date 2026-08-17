@@ -1,8 +1,9 @@
 """
 Run the full pipeline across every league in league_config.py.
 
-Odds-enabled leagues: model -> live odds -> de-vig -> edge -> plausibility
-ceiling -> traffic light -> logged as a candidate pick.
+Odds-enabled leagues: model -> promoted-team seeding -> live odds ->
+de-vig -> edge -> plausibility ceiling -> traffic light -> logged as a
+candidate pick.
 Forecast-only leagues (League One/Two): model -> ratings printed, no
 edge/pick logic, clearly labelled.
 
@@ -10,10 +11,10 @@ At the end: Suggested Bets built from every green/amber pick across
 ALL odds-enabled leagues combined.
 
 Usage:
-    python3 run_all_leagues.py YOUR_ODDS_API_KEY
+    python3 run_all_leagues.py
+(API key now comes from .env — see env_config.py / .env.example)
 """
 
-import sys
 import requests
 import pandas as pd
 
@@ -24,8 +25,10 @@ from traffic_light import classify
 from suggested_bets import build_combos, print_combos
 from results_tracker import log_pick
 from rank_all_markets import collect_selections, rank_all_markets, print_ranking
+from promoted_seeding import seed_missing_teams
+from env_config import require_api_key
 
-ODDS_API_KEY = sys.argv[1] if len(sys.argv) > 1 else None
+ODDS_API_KEY = require_api_key()
 ODDS_BASE_URL = "https://api.the-odds-api.com/v4/sports/{key}/odds/"
 
 
@@ -114,6 +117,25 @@ def process_league(league_name: str, config: dict):
 
     print("Fetching live odds...")
     events = fetch_odds(config["odds_key"])
+
+    # Find every team in this batch of fixtures that has no fitted rating,
+    # then seed them (feeder-league data for English divisions, generic
+    # fallback elsewhere) rather than skipping every fixture they're in.
+    missing_teams = set()
+    for event in events:
+        home = normalise_name(league_name, event["home_team"])
+        away = normalise_name(league_name, event["away_team"])
+        if home not in model["attack"]:
+            missing_teams.add(home)
+        if away not in model["attack"]:
+            missing_teams.add(away)
+
+    if missing_teams:
+        print(f"  Seeding provisional ratings for: {sorted(missing_teams)}")
+        model = seed_missing_teams(model, league_name, list(missing_teams))
+        for team, method in model.get("seed_method", {}).items():
+            print(f"    {team}: {method}")
+
     picks = []
     all_selections = []
 
@@ -125,14 +147,19 @@ def process_league(league_name: str, config: dict):
 
         if home not in model["attack"] or away not in model["attack"]:
             missing = [t for t in (home, away) if t not in model["attack"]]
-            print(f"  SKIPPED {fixture_label} — no rating for {missing} "
-                  f"(promoted with no history, or name mismatch — check "
-                  f"TEAM_NAME_MAPS['{league_name}'] if this team should exist)")
+            print(f"  SKIPPED {fixture_label} — seeding failed for {missing} "
+                  f"(unexpected — check promoted_seeding.py)")
             continue
+
+        # Any pick touching a seeded (provisional-rating) team is capped
+        # at 'verify' regardless of edge — a guessed rating shouldn't be
+        # able to produce a 'green' pick.
+        seed_methods = model.get("seed_method", {})
+        involves_seeded_team = home in seed_methods or away in seed_methods
 
         grid = score_matrix(home, away, model)
         markets = derive_markets(grid)
-        all_selections.extend(collect_selections(fixture_label, markets))
+        all_selections.extend(collect_selections(fixture_label, markets, league_name))
 
         # --- 1X2 ---
         h2h = average_h2h(event)
@@ -146,7 +173,11 @@ def process_league(league_name: str, config: dict):
             ]:
                 edge = model_prob - market_prob
                 status, reason = check_plausibility(model_prob, market_prob, edge)
-                tier = classify("1X2", edge) if status == "ok" else "verify"
+                if involves_seeded_team:
+                    tier, reason = "verify", "involves a provisionally-seeded team — " + \
+                        (seed_methods.get(home) or seed_methods.get(away))
+                else:
+                    tier = classify("1X2", edge) if status == "ok" else "verify"
                 print(f"  {fixture_label:35s} 1X2/{selection:5s} "
                       f"model={model_prob:.1%} mkt={market_prob:.1%} "
                       f"edge={edge:+.1%} -> {tier}"
@@ -171,12 +202,12 @@ def process_league(league_name: str, config: dict):
             ]:
                 edge = model_prob - market_prob
                 status, reason = check_plausibility(model_prob, market_prob, edge)
-                # traffic_light.py only has explicit bands for O/U 2.5 today —
-                # 1.5 reuses those same thresholds via MARKET_BANDS lookup;
-                # tune separately later if 1.5 behaves differently once real
-                # results come in.
-                band_key = "O/U 2.5"
-                tier = classify(band_key, edge) if status == "ok" else "verify"
+                if involves_seeded_team:
+                    tier, reason = "verify", "involves a provisionally-seeded team — " + \
+                        (seed_methods.get(home) or seed_methods.get(away))
+                else:
+                    band_key = "O/U 2.5"  # 1.5 reuses these thresholds for now
+                    tier = classify(band_key, edge) if status == "ok" else "verify"
                 print(f"  {fixture_label:35s} {market_key}/{selection:10s} "
                       f"model={model_prob:.1%} mkt={market_prob:.1%} "
                       f"edge={edge:+.1%} -> {tier}"
@@ -192,10 +223,6 @@ def process_league(league_name: str, config: dict):
 
 
 if __name__ == "__main__":
-    if not ODDS_API_KEY:
-        print("Pass your Odds API key: python3 run_all_leagues.py YOUR_KEY")
-        sys.exit(1)
-
     all_picks = []
     all_selections = []
     for league_name, config in LEAGUES.items():

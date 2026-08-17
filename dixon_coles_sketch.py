@@ -54,22 +54,66 @@ def match_log_likelihood(params, fixtures, teams):
         ll += np.log(max(p, 1e-10))
     return -ll  # negative for minimisation
 
-def fit_league(fixtures, teams):
+def fit_league(fixtures, teams, reg_lambda=0.01):
     """
-    fixtures: recent results for ONE league (rolling window — consider
-    weighting recent gameweeks higher, same instinct as your 'recent form'
-    correction in the MLB build).
-    Returns fitted attack/defence/home_adv/rho.
+    fixtures: recent results for ONE league.
+    reg_lambda: L2 regularization strength. Shrinks every team's attack/
+    defence parameter toward the league mean. Added after the live odds run
+    showed several elite home sides (Barcelona, Bayern, Real Madrid) with
+    suspiciously large edges — the standard fix for that failure mode in
+    unregularized Poisson team-strength models. NOTE: at 0.01 this did NOT
+    measurably shrink those edges in testing; the plausibility ceiling is
+    what actually contains them. Raise it if you want to retest.
+
+    VECTORIZED: the likelihood used to loop over every fixture in Python on
+    every optimizer iteration, which made fitting 8 leagues painfully slow.
+    Everything below operates on numpy arrays instead — same maths, same
+    results, dramatically faster.
     """
     n = len(teams)
+    idx = {t: i for i, t in enumerate(teams)}
+
+    # Precompute once, outside the objective — this is the whole speedup.
+    home_idx = np.array([idx[f[0]] for f in fixtures])
+    away_idx = np.array([idx[f[1]] for f in fixtures])
+    hg = np.array([f[2] for f in fixtures], dtype=float)
+    ag = np.array([f[3] for f in fixtures], dtype=float)
+
+    # Masks for the four scorelines Dixon-Coles corrects
+    m00 = (hg == 0) & (ag == 0)
+    m01 = (hg == 0) & (ag == 1)
+    m10 = (hg == 1) & (ag == 0)
+    m11 = (hg == 1) & (ag == 1)
+
+    def objective(params):
+        attack = params[:n]
+        defence = params[n:2 * n]
+        home_adv = params[2 * n]
+        rho = params[2 * n + 1]
+
+        lam_h = np.exp(attack[home_idx] + defence[away_idx] + home_adv)
+        lam_a = np.exp(attack[away_idx] + defence[home_idx])
+
+        log_p = poisson.logpmf(hg, lam_h) + poisson.logpmf(ag, lam_a)
+
+        tau_vals = np.ones_like(lam_h)
+        tau_vals[m00] = 1 - (lam_h[m00] * lam_a[m00] * rho)
+        tau_vals[m01] = 1 + (lam_h[m01] * rho)
+        tau_vals[m10] = 1 + (lam_a[m10] * rho)
+        tau_vals[m11] = 1 - rho
+        tau_vals = np.maximum(tau_vals, 1e-10)  # keep the log finite
+
+        ll = np.sum(log_p + np.log(tau_vals))
+        penalty = reg_lambda * (np.sum(attack ** 2) + np.sum(defence ** 2))
+        return -ll + penalty
+
     x0 = np.concatenate([np.zeros(n), np.zeros(n), [0.2], [-0.1]])
-    result = minimize(match_log_likelihood, x0, args=(fixtures, teams),
-                       method="L-BFGS-B")
+    result = minimize(objective, x0, method="L-BFGS-B")
     params = result.x
-    attack = dict(zip(teams, params[:n]))
-    defence = dict(zip(teams, params[n:2*n]))
-    return {"attack": attack, "defence": defence,
-            "home_adv": params[2*n], "rho": params[2*n+1]}
+    return {"attack": dict(zip(teams, params[:n])),
+            "defence": dict(zip(teams, params[n:2 * n])),
+            "home_adv": params[2 * n], "rho": params[2 * n + 1]}
+
 
 def score_matrix(home, away, model, max_goals=8):
     """Full scoreline probability grid for one fixture.
