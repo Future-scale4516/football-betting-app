@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import date
 from football_core import setup_page, selection_side
 from results_tracker import _load as load_results, settle_by_index, delete_by_index
+from auto_settle import settle_open_picks, CURRENT_SEASON
 
 setup_page("Football Model — Results")
 
@@ -124,9 +125,42 @@ if not settled.empty:
     by_market["hit_rate"] = (by_market["won"] / by_market["picks"] * 100).round(1)
     st.dataframe(by_market, use_container_width=True, hide_index=True)
 
-# --------------------------------------------------------------- settlement
+# ---------------------------------------------------------- auto-settlement
 st.divider()
-st.subheader("Settle a pick")
+st.subheader("Settle results")
+
+st.caption(
+    f"Picks stay 'open' until settled — nothing checks results automatically "
+    f"in the background. This grades every open pick below against real "
+    f"{CURRENT_SEASON[:2]}/{CURRENT_SEASON[2:]} results from football-data.co.uk, "
+    "and pulls closing odds from the same file where available so CLV gets "
+    "populated. Matches without a published result are left open."
+)
+
+open_all = view[view["actual_outcome"].isna()]
+
+if open_all.empty:
+    st.write("Nothing open to settle in the current filter.")
+else:
+    if st.button(f"⚡ Auto-settle {len(open_all)} open pick(s)", type="primary"):
+        with st.spinner("Fetching results..."):
+            settlements, notes = settle_open_picks(open_all)
+        for n in notes:
+            st.warning(n)
+        if settlements:
+            for idx, won, closing in settlements:
+                settle_by_index(idx, won, closing)
+            with_clv = sum(1 for _, _, c in settlements if c)
+            st.success(
+                f"Settled {len(settlements)} pick(s) — {with_clv} with closing "
+                "odds for CLV."
+            )
+            st.rerun()
+        else:
+            st.info("Nothing could be settled — no finished results matched.")
+
+st.divider()
+st.subheader("Settle a pick manually")
 st.caption(
     "Mark a result once the match has finished. Closing odds are optional but "
     "worth adding where you have them — without them there's no CLV, which is "
@@ -135,8 +169,10 @@ st.caption(
 
 open_picks = view[view["actual_outcome"].isna()]
 if open_picks.empty:
-    st.write("Nothing open to settle in the current filter.")
+    st.write("Nothing left to settle manually.")
 else:
+    st.caption("For anything auto-settle couldn't match — a name mismatch, or "
+               "a competition football-data doesn't cover.")
     labels = {
         i: f"{r['fixture']} — {r['market']}: {r['selection']} "
            f"({r['league']}, {r['fixture_date']})"
