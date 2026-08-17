@@ -44,9 +44,16 @@ def _fit_as_of(league_name: str, target_date):
     before target_date. Early in a new season this is just last
     season's model, same as everywhere else in the app — it's only
     once enough current-season games exist that this starts to diverge
-    and actually reflect in-season form."""
+    and actually reflect in-season form.
+
+    Returns (model_or_None, current_season_df_or_None, error_or_None).
+    """
     base = _load_last_season_fixtures(league_name)
-    cur = _load_current_season(league_name)
+    try:
+        cur = _load_current_season(league_name)
+    except Exception as e:
+        return None, None, f"couldn't load current-season file ({e})"
+
     prior = cur[(cur["_date"] < target_date)
                 & cur["FTHG"].notna() & cur["FTAG"].notna()]
     prior_fixtures = list(
@@ -56,8 +63,8 @@ def _fit_as_of(league_name: str, target_date):
     fixtures = base + prior_fixtures
     teams = sorted({t for fx in fixtures for t in (fx[0], fx[1])})
     if len(teams) < 4 or len(fixtures) < 20:
-        return None, cur
-    return fit_league(fixtures, teams), cur
+        return None, cur, "not enough prior data to fit yet"
+    return fit_league(fixtures, teams), cur, None
 
 
 def build_historical_results(target_date, leagues, markets=("1X2", "O/U 2.5", "BTTS"),
@@ -71,9 +78,9 @@ def build_historical_results(target_date, leagues, markets=("1X2", "O/U 2.5", "B
     rows, notes = [], []
 
     for league in leagues:
-        model, cur = _fit_as_of(league, target_date)
+        model, cur, err = _fit_as_of(league, target_date)
         if model is None:
-            notes.append(f"{league}: not enough prior-season data to fit as of {target_date}")
+            notes.append(f"{league}: skipped — {err}")
             continue
 
         day_games = cur[(cur["_date"] == target_date)
