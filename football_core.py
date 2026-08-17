@@ -5,10 +5,22 @@ Both the Streamlit pages and run_all_leagues.py import from here so
 there's one implementation, not two.
 """
 
+import io
 from datetime import datetime, date, timezone
 import requests
 import pandas as pd
 import streamlit as st
+
+CSV_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; football-betting-app)"}
+
+
+def _fetch_csv(url: str) -> pd.DataFrame:
+    """Bare pd.read_csv(url) sends no User-Agent, and football-data.co.uk
+    sometimes returns an ambiguous HTTP 300 to requests like that instead
+    of the file. Fetching with a normal header fixes it."""
+    resp = requests.get(url, headers=CSV_HEADERS, timeout=20)
+    resp.raise_for_status()
+    return pd.read_csv(io.StringIO(resp.text))
 
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets
 from league_config import LEAGUES, data_url, normalise_name
@@ -192,7 +204,7 @@ def _avg_market(event, market_key, name_map, line=None):
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fit_model_for_league(league_name: str):
-    df = pd.read_csv(data_url(league_name))
+    df = _fetch_csv(data_url(league_name))
     df = df[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]].dropna()
     fixtures = list(df.itertuples(index=False, name=None))
     teams = sorted(set(df["HomeTeam"]) | set(df["AwayTeam"]))

@@ -9,8 +9,22 @@ games from the current season happened earlier than the selected date,
 so there's no lookahead into the result being graded.
 """
 
+import io
+import requests
 import pandas as pd
 import streamlit as st
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; football-betting-app)"}
+
+
+def _fetch_csv(url: str) -> pd.DataFrame:
+    """Plain pd.read_csv(url) sends no User-Agent, and football-data.co.uk
+    sometimes returns an ambiguous HTTP 300 to bare requests like that
+    instead of the file. Fetching with requests + a normal header first
+    fixes it — same pattern as every other odds/fixture fetch in this app."""
+    resp = requests.get(url, headers=HEADERS, timeout=20)
+    resp.raise_for_status()
+    return pd.read_csv(io.StringIO(resp.text))
 
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets
 from league_config import LEAGUES, data_url
@@ -27,14 +41,14 @@ MARKET_SELECTIONS = {
 def _load_current_season(league_name: str):
     cfg = LEAGUES[league_name]
     url = RESULTS_URL.format(season=CURRENT_SEASON, code=cfg["data_code"])
-    df = pd.read_csv(url)
+    df = _fetch_csv(url)
     df["_date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce").dt.date
     return df
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_last_season_fixtures(league_name: str):
-    df = pd.read_csv(data_url(league_name))
+    df = _fetch_csv(data_url(league_name))
     df = df[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]].dropna()
     return list(df.itertuples(index=False, name=None))
 
