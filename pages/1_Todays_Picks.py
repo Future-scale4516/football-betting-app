@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 from football_core import (setup_page, sidebar_date, run_all, render_pick_card,
-                            TIER_ICON, selection_side)
+                            TIER_ICON, market_label, market_label_options,
+                            DEFAULT_MARKET_LABELS)
 
 setup_page("Football Model — Today's Picks")
 sel_date, model_only = sidebar_date()
@@ -37,26 +38,23 @@ if rows.empty:
     )
     st.stop()
 
-rows["side"] = rows["selection"].map(selection_side)
+rows["market_label"] = [market_label(m, sel) for m, sel
+                        in zip(rows["market"], rows["selection"])]
 
 leagues = sorted(rows["league"].unique())
-markets = sorted(rows["market"].unique())
-sides = sorted(rows["side"].unique())
+label_options = market_label_options(rows)
+default_labels = [m for m in DEFAULT_MARKET_LABELS if m in label_options] or label_options
 
-c1, c2 = st.columns(2)
+c1, c2, c3 = st.columns([2, 2, 2])
 with c1:
     league_filter = st.multiselect("League", leagues, default=leagues)
 with c2:
-    market_filter = st.multiselect("Market", markets, default=markets)
-
-c3, c4 = st.columns(2)
-with c3:
-    side_filter = st.multiselect(
-        "Selection", sides, default=sides,
-        help="Combine with Market — e.g. Market 'O/U 2.5' + Selection 'Over' "
-             "shows only the over 2.5 picks. BTTS + 'Yes' works the same way.",
+    market_filter = st.multiselect(
+        "Market", label_options, default=default_labels,
+        help="Defaults to Match Winner. Add or remove markets here rather "
+             "than loading everything at once.",
     )
-with c4:
+with c3:
     tier_filter = st.multiselect(
         "Show", ["green", "amber", "verify", "red", "forecast"],
         default=["green", "amber", "verify", "forecast"],
@@ -66,8 +64,7 @@ with c4:
 
 view = rows[
     rows["league"].isin(league_filter)
-    & rows["market"].isin(market_filter)
-    & rows["side"].isin(side_filter)
+    & rows["market_label"].isin(market_filter)
     & rows["tier"].isin(tier_filter)
 ]
 
@@ -96,7 +93,7 @@ for league in league_filter:
             metrics.append(("Odds", f"{r['odds']:.2f}"))
         render_pick_card(
             TIER_ICON.get(r["tier"], ""),
-            f"{r['selection']} — {r['market']}",
+            r["market_label"],
             r["fixture"],
             metrics,
             reason=r["reason"] or None,

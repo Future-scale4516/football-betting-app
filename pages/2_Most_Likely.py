@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 from football_core import (setup_page, sidebar_date, run_all, render_pick_card,
-                            selection_side)
+                            market_label, market_label_options,
+                            DEFAULT_MARKET_LABELS)
 
 setup_page("Football Model — Most Likely")
 sel_date, model_only = sidebar_date()
@@ -25,32 +26,28 @@ if rows.empty:
     st.info(f"No fixtures found for {sel_date:%a %d %b}.")
     st.stop()
 
-rows["side"] = rows["selection"].map(selection_side)
+rows["market_label"] = [market_label(m, sel) for m, sel
+                        in zip(rows["market"], rows["selection"])]
 
 leagues = sorted(rows["league"].unique())
-markets = sorted(rows["market"].unique())
-sides = sorted(rows["side"].unique())
+label_options = market_label_options(rows)
+default_labels = [m for m in DEFAULT_MARKET_LABELS if m in label_options] or label_options
 
-c1, c2 = st.columns(2)
+c1, c2, c3 = st.columns([2, 2, 1])
 with c1:
     league_filter = st.multiselect("League", leagues, default=leagues)
 with c2:
-    market_filter = st.multiselect("Market", markets, default=markets)
-
-c3, c4 = st.columns([3, 1])
-with c3:
-    side_filter = st.multiselect(
-        "Selection", sides, default=sides,
-        help="Combine with Market — e.g. 'O/U 2.5' + 'Over' ranks only the "
-             "over 2.5 picks. 'BTTS' + 'Yes' works the same way.",
+    market_filter = st.multiselect(
+        "Market", label_options, default=default_labels,
+        help="Defaults to Match Winner. Pick exactly the markets you want "
+             "ranked rather than loading all of them.",
     )
-with c4:
+with c3:
     top_n = st.number_input("Show", min_value=5, max_value=100, value=20, step=5)
 
 view = rows[
     rows["league"].isin(league_filter)
-    & rows["market"].isin(market_filter)
-    & rows["side"].isin(side_filter)
+    & rows["market_label"].isin(market_filter)
 ]
 
 if view.empty:
@@ -65,7 +62,7 @@ for _, r in view.iterrows():
         metrics.append(("Odds", f"{r['odds']:.2f}"))
     render_pick_card(
         None,
-        f"{r['selection']} — {r['market']}",
+        r["market_label"],
         f"{r['league']} · {r['fixture']}",
         metrics,
         reason="Forecast only — no odds for this league"

@@ -57,12 +57,33 @@ ACCA_MARKETS = ["1X2", "BTTS", "O/U 2.5"]
 TIER_ICON = {"green": "🟢", "amber": "🟡", "verify": "🔵", "red": "⚪"}
 
 
-def selection_side(selection: str) -> str:
-    """Reduces a selection label to a filterable side so 'Over 2.5' and
-    'Over 1.5' both filter under 'Over'. Lets you ask for every Over 2.5
-    game, or every BTTS Yes, without picking through markets by hand."""
-    first = selection.split()[0]
-    return first if first in ("Over", "Under", "Home", "Draw", "Away", "Yes", "No") else selection
+def market_label(market: str, selection: str) -> str:
+    """One combined label per market+selection, e.g. 'Match Winner - Home',
+    'BTTS - Yes', 'Over 2.5'. Replaces the old two-dropdown Market +
+    Selection filter, which was visually noisy and needed both set
+    correctly to isolate one thing."""
+    if market == "1X2":
+        return f"Match Winner - {selection}"
+    if market == "BTTS":
+        return f"BTTS - {selection}"
+    if market.startswith("O/U"):
+        return selection          # already reads "Over 2.5" / "Under 1.5"
+    return f"{market} - {selection}"
+
+
+# Sensible default so the page doesn't open with everything at once.
+DEFAULT_MARKET_LABELS = ["Match Winner - Home", "Match Winner - Draw",
+                          "Match Winner - Away"]
+
+
+def market_label_options(rows) -> list[str]:
+    """All labels present, ordered sensibly rather than alphabetically."""
+    present = set(rows["market_label"].unique())
+    preferred = ["Match Winner - Home", "Match Winner - Draw", "Match Winner - Away",
+                 "BTTS - Yes", "BTTS - No",
+                 "Over 1.5", "Under 1.5", "Over 2.5", "Under 2.5"]
+    ordered = [m for m in preferred if m in present]
+    return ordered + sorted(present - set(ordered))
 
 
 # ---------------------------------------------------------------- UI helpers

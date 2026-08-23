@@ -3,32 +3,16 @@ Recomputes what the model would have predicted for a past date — using
 only data available BEFORE that date — then grades it against the real
 result. No pre-logged picks required.
 
-This mirrors the MLB app's Results page: pick a date, click Load, done.
-The model is refit each time using last season in full plus whatever
-games from the current season happened earlier than the selected date,
-so there's no lookahead into the result being graded.
+Mirrors the MLB app's Results page: pick a date, click Load, done.
 """
 
-import io
-import requests
 import pandas as pd
 import streamlit as st
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; football-betting-app)"}
-
-
-def _fetch_csv(url: str) -> pd.DataFrame:
-    """Plain pd.read_csv(url) sends no User-Agent, and football-data.co.uk
-    sometimes returns an ambiguous HTTP 300 to bare requests like that
-    instead of the file. Fetching with requests + a normal header first
-    fixes it — same pattern as every other odds/fixture fetch in this app."""
-    resp = requests.get(url, headers=HEADERS, timeout=20)
-    resp.raise_for_status()
-    return pd.read_csv(io.StringIO(resp.text))
-
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets
 from league_config import LEAGUES, data_url
-from auto_settle import CURRENT_SEASON, RESULTS_URL, grade, find_closing_odds
+from auto_settle import grade, find_closing_odds
+from football_data_source import load_results, _attempt, BASE
 
 MARKET_SELECTIONS = {
     "1X2": [("Home", "home"), ("Draw", "draw"), ("Away", "away")],
@@ -38,38 +22,28 @@ MARKET_SELECTIONS = {
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _load_current_season(league_name: str):
+def _load_season_for(league_name: str, target_date):
     cfg = LEAGUES[league_name]
-    url = RESULTS_URL.format(season=CURRENT_SEASON, code=cfg["data_code"])
-    df = _fetch_csv(url)
-    df["_date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce").dt.date
-    return df
+    return load_results(cfg["data_code"], target_date)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load_last_season_fixtures(league_name: str):
-    df = _fetch_csv(data_url(league_name))
+    df, _ = _attempt(data_url(league_name))
+    if df is None:
+        return []
     df = df[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]].dropna()
     return list(df.itertuples(index=False, name=None))
 
 
-def _fit_as_of(league_name: str, target_date):
-    """Last season in full + this season's completed games strictly
-    before target_date. Early in a new season this is just last
-    season's model, same as everywhere else in the app — it's only
-    once enough current-season games exist that this starts to diverge
-    and actually reflect in-season form.
-
-    Returns (model_or_None, current_season_df_or_None, error_or_None).
-    """
+def _fit_as_of(league_name: str, target_date, results_df):
+    """Last season in full + this season's completed games strictly before
+    target_date, so there's no lookahead into the day being graded."""
     base = _load_last_season_fixtures(league_name)
-    try:
-        cur = _load_current_season(league_name)
-    except Exception as e:
-        return None, None, f"couldn't load current-season file ({e})"
 
-    prior = cur[(cur["_date"] < target_date)
-                & cur["FTHG"].notna() & cur["FTAG"].notna()]
+    prior = results_df[(results_df["_date"] < target_date)
+                        & results_df["FTHG"].notna()
+                        & results_df["FTAG"].notna()]
     prior_fixtures = list(
         prior[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]]
         .itertuples(index=False, name=None))
@@ -77,28 +51,42 @@ def _fit_as_of(league_name: str, target_date):
     fixtures = base + prior_fixtures
     teams = sorted({t for fx in fixtures for t in (fx[0], fx[1])})
     if len(teams) < 4 or len(fixtures) < 20:
-        return None, cur, "not enough prior data to fit yet"
-    return fit_league(fixtures, teams), cur, None
+        return None, "not enough prior data to fit a model yet"
+    return fit_league(fixtures, teams), None
 
 
-def build_historical_results(target_date, leagues, markets=("1X2", "O/U 2.5", "BTTS"),
-                              pick_mode="most_likely"):
+def build_historical_results(target_date, leagues,
+                              markets=("1X2", "O/U 2.5", "BTTS"),
+                              pick_mode="most_likely",
+                              uploaded=None):
     """
     pick_mode: 'most_likely' grades only the model's top selection per
-    market per fixture (mirrors the MLB app's one-pick-per-market view).
-    'all' grades every selection.
-    Returns (rows_df, notes).
+    market per fixture. 'all' grades every selection.
+    uploaded: {league_name: dataframe} from manual CSV upload, bypassing
+    the download entirely.
+    Returns (rows_df, notes, diagnostics).
     """
-    rows, notes = [], []
+    rows, notes, diagnostics = [], [], {}
 
     for league in leagues:
-        model, cur, err = _fit_as_of(league, target_date)
+        if uploaded and league in uploaded:
+            results_df, log = uploaded[league], ["(uploaded manually)"]
+        else:
+            results_df, log = _load_season_for(league, target_date)
+        diagnostics[league] = log
+
+        if results_df is None:
+            notes.append(f"{league}: no results file found — see diagnostics below")
+            continue
+
+        model, err = _fit_as_of(league, target_date, results_df)
         if model is None:
             notes.append(f"{league}: skipped — {err}")
             continue
 
-        day_games = cur[(cur["_date"] == target_date)
-                         & cur["FTHG"].notna() & cur["FTAG"].notna()]
+        day_games = results_df[(results_df["_date"] == target_date)
+                                & results_df["FTHG"].notna()
+                                & results_df["FTAG"].notna()]
         if day_games.empty:
             continue
 
@@ -106,7 +94,7 @@ def build_historical_results(target_date, leagues, markets=("1X2", "O/U 2.5", "B
             home, away = g["HomeTeam"], g["AwayTeam"]
             if home not in model["attack"] or away not in model["attack"]:
                 notes.append(f"{league}: {home} vs {away} skipped — no rating "
-                             "(promoted/relegated with no prior data yet)")
+                             "(promoted/relegated, no prior data)")
                 continue
 
             grid = score_matrix(home, away, model)
@@ -129,4 +117,4 @@ def build_historical_results(target_date, leagues, markets=("1X2", "O/U 2.5", "B
                         "closing_odds": find_closing_odds(g, market, label),
                     })
 
-    return pd.DataFrame(rows), notes
+    return pd.DataFrame(rows), notes, diagnostics
