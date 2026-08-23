@@ -100,4 +100,6 @@ for league in league_filter:
             r["fixture"],
             metrics,
             reason=r["reason"] or None,
+            kickoff=r.get("kickoff"),
+            started=bool(r.get("started")),
         )

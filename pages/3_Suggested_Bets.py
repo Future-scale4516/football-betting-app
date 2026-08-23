@@ -89,7 +89,13 @@ for group_name, group_leagues in GROUPS:
                 st.markdown(f"**{r['selection']}** — {r['fixture']}")
                 c1, c2 = st.columns([1, 3])
                 c1.metric("Model %", f"{r['model_prob']*100:.1f}%")
-                c2.caption(r["league"])
+                sub = r["league"]
+                if r.get("kickoff"):
+                    sub = f"{sub} · KO {r['kickoff']}"
+                c2.caption(sub)
+                if r.get("started"):
+                    st.warning("⚠️ Already kicked off — leg picked from a stale "
+                               "prediction.", icon="⏱️")
 
         if not acca["short"]:
             m1, m2 = st.columns(2)

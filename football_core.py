@@ -17,10 +17,26 @@ CSV_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; football-betting-app)"}
 def _fetch_csv(url: str) -> pd.DataFrame:
     """Bare pd.read_csv(url) sends no User-Agent, and football-data.co.uk
     sometimes returns an ambiguous HTTP 300 to requests like that instead
-    of the file. Fetching with a normal header fixes it."""
+    of the file. Fetching with a normal header fixes that.
+
+    Also handles: an HTML page returned instead of a CSV (usually means
+    the file doesn't exist yet), and a stray short/blank row mid-file
+    (falls back to skipping just that row)."""
     resp = requests.get(url, headers=CSV_HEADERS, timeout=20)
     resp.raise_for_status()
-    return pd.read_csv(io.StringIO(resp.text))
+
+    text = resp.text
+    if text.lstrip()[:1] == "<":
+        raise ValueError(
+            f"server returned a webpage instead of a CSV — this file "
+            f"likely doesn't exist yet ({url})"
+        )
+
+    try:
+        return pd.read_csv(io.StringIO(text))
+    except pd.errors.ParserError:
+        return pd.read_csv(io.StringIO(text), engine="python",
+                            on_bad_lines="skip")
 
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets
 from league_config import LEAGUES, data_url, normalise_name
@@ -94,12 +110,23 @@ def sidebar_date():
     return sel, model_only
 
 
-def render_pick_card(icon, headline, subline, metrics, reason=None):
+def render_pick_card(icon, headline, subline, metrics, reason=None,
+                      kickoff=None, started=False):
     """Card layout instead of a table — much easier to read on mobile,
     same approach as the MLB app."""
     with st.container(border=True):
         st.markdown(f"**{icon + ' ' if icon else ''}{headline}**")
-        st.caption(subline)
+        sub = subline
+        if kickoff:
+            sub = f"{sub} · KO {kickoff}"
+        st.caption(sub)
+        if started:
+            st.warning(
+                "⚠️ This match has already kicked off — this prediction was "
+                "made before or after kickoff without knowing the live score "
+                "or events. Treat it as stale, not a real-time read.",
+                icon="⏱️",
+            )
         cols = st.columns(len(metrics))
         for col, (label, value) in zip(cols, metrics):
             col.metric(label, value)
@@ -124,6 +151,32 @@ def _event_date(event) -> date:
     if not ts:
         return None
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().date()
+
+
+def _event_kickoff(event):
+    """Returns (kickoff_local_str, started_bool) from an Odds API event."""
+    ts = event.get("commence_time")
+    if not ts:
+        return None, False
+    dt_local = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+    started = dt_local <= datetime.now().astimezone()
+    return dt_local.strftime("%H:%M"), started
+
+
+def _fixture_kickoff(target_date: date, time_str):
+    """Returns (kickoff_str, started_bool) for a fixtures.csv row, which
+    gives a bare local time with no date attached to compare against."""
+    if target_date < date.today():
+        return time_str, True
+    if target_date > date.today():
+        return time_str, False
+    if not time_str or not isinstance(time_str, str):
+        return time_str, False
+    try:
+        kt = datetime.strptime(time_str.strip(), "%H:%M").time()
+    except ValueError:
+        return time_str, False
+    return time_str, datetime.now().time() >= kt
 
 
 def fetch_odds(sport_key: str):
@@ -171,7 +224,13 @@ def fetch_upcoming_fixtures(div_code: str, target: date):
     except Exception:
         return [], "couldn't parse dates in fixtures.csv"
 
-    return [(r.HomeTeam, r.AwayTeam) for r in df.itertuples()], None
+    has_time = "Time" in df.columns
+    out = []
+    for r in df.itertuples():
+        time_str = getattr(r, "Time", None) if has_time else None
+        kickoff, started = _fixture_kickoff(target, time_str)
+        out.append((r.HomeTeam, r.AwayTeam, kickoff, started))
+    return out, None
 
 
 # ------------------------------------------------------------------- de-vig
@@ -211,7 +270,7 @@ def fit_model_for_league(league_name: str):
     return fit_league(fixtures, teams)
 
 
-def _evaluate(fixture, league, markets, odds_data, seeded):
+def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started=False):
     """Turns one fixture's model output + market odds into pick rows."""
     rows = []
 
@@ -232,6 +291,7 @@ def _evaluate(fixture, league, markets, odds_data, seeded):
             "selection": selection, "model_prob": model_prob,
             "market_prob": market_prob, "odds": odds, "edge": edge,
             "tier": tier, "reason": reason,
+            "kickoff": kickoff, "started": started,
         })
 
     m = markets["1X2"]
@@ -309,6 +369,7 @@ def run_all(target_date: date, model_only: bool = False):
                 if home not in model["attack"] or away not in model["attack"]:
                     continue
                 seeded = seed_methods.get(home) or seed_methods.get(away)
+                kickoff, started = _event_kickoff(e)
                 grid = score_matrix(home, away, model)
                 markets = derive_markets(grid)
 
@@ -321,7 +382,8 @@ def run_all(target_date: date, model_only: bool = False):
                         e, "totals", {"Over": "over", "Under": "under"}, line=line)
 
                 all_rows.extend(_evaluate(
-                    f"{home} vs {away}", league, markets, odds_data, seeded))
+                    f"{home} vs {away}", league, markets, odds_data, seeded,
+                    kickoff=kickoff, started=started))
         else:
             fixtures, err = fetch_upcoming_fixtures(cfg["data_code"], target_date)
             if err:
@@ -330,19 +392,21 @@ def run_all(target_date: date, model_only: bool = False):
             if not fixtures:
                 continue
 
-            missing = {t for fx in fixtures for t in fx if t not in model["attack"]}
+            missing = {t for fx in fixtures for t in (fx[0], fx[1])
+                       if t not in model["attack"]}
             if missing:
                 model = seed_missing_teams(model, league, list(missing))
             seed_methods = model.get("seed_method", {})
 
-            for home, away in fixtures:
+            for home, away, kickoff, started in fixtures:
                 if home not in model["attack"] or away not in model["attack"]:
                     continue
                 grid = score_matrix(home, away, model)
                 markets = derive_markets(grid)
                 all_rows.extend(_evaluate(
                     f"{home} vs {away}", league, markets, {},
-                    seed_methods.get(home) or seed_methods.get(away)))
+                    seed_methods.get(home) or seed_methods.get(away),
+                    kickoff=kickoff, started=started))
 
     return pd.DataFrame(all_rows), notes
 

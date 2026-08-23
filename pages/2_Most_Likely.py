@@ -70,4 +70,6 @@ for _, r in view.iterrows():
         metrics,
         reason="Forecast only — no odds for this league"
         if r["tier"] == "forecast" else None,
+        kickoff=r.get("kickoff"),
+        started=bool(r.get("started")),
     )
