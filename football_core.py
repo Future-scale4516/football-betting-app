@@ -241,8 +241,33 @@ def fetch_odds(sport_key: str):
 def _load_fixtures_csv():
     """One download shared by every league. Previously this file was
     fetched once per league — 8 identical downloads per run, which was
-    the main reason model-only mode felt slow."""
-    return _fetch_csv(FIXTURES_URL)
+    the main reason model-only mode felt slow.
+
+    Doesn't assume the header is line 1 — football-data.co.uk's combined
+    fixtures file has occasionally had stray content before the real
+    header row, which pandas would otherwise happily parse as column
+    names, silently producing a dataframe with no 'Div' column and no
+    error. Searching for the real header line fixes that regardless of
+    what (if anything) comes before it.
+    """
+    resp = requests.get(FIXTURES_URL, headers=CSV_HEADERS, timeout=20)
+    resp.raise_for_status()
+
+    lines = resp.text.splitlines()
+    header_idx = next(
+        (i for i, line in enumerate(lines) if line.startswith("Div,Date")), None)
+    if header_idx is None:
+        raise ValueError(
+            "couldn't find the expected 'Div,Date,...' header row anywhere "
+            "in fixtures.csv — the file's format may have changed"
+        )
+
+    clean_text = "\n".join(lines[header_idx:])
+    try:
+        return pd.read_csv(io.StringIO(clean_text))
+    except pd.errors.ParserError:
+        return pd.read_csv(io.StringIO(clean_text), engine="python",
+                            on_bad_lines="skip")
 
 
 def fetch_upcoming_fixtures(div_code: str, target: date):
@@ -254,7 +279,8 @@ def fetch_upcoming_fixtures(div_code: str, target: date):
         return [], f"couldn't load fixtures.csv: {e}"
 
     if "Div" not in df.columns:
-        return [], "fixtures.csv missing expected 'Div' column"
+        return [], (f"fixtures.csv missing expected 'Div' column — "
+                     f"found instead: {list(df.columns)[:8]}")
 
     df = df[df["Div"] == div_code].copy()
     if df.empty:
