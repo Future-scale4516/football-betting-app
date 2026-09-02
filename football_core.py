@@ -34,7 +34,12 @@ def _fetch_csv(url: str) -> pd.DataFrame:
     resp = requests.get(url, headers=CSV_HEADERS, timeout=20)
     resp.raise_for_status()
 
-    text = resp.text
+    # requests guesses ISO-8859-1 for text/* responses with no explicit
+    # charset, which mangles a UTF-8 byte-order-mark into garbage instead
+    # of stripping it — silently breaking exact-prefix checks like the
+    # header search in _load_fixtures_csv below. Decoding the raw bytes
+    # as utf-8-sig fixes that (and is a no-op if there's no BOM at all).
+    text = resp.content.decode("utf-8-sig", errors="replace")
     if text.lstrip()[:1] == "<":
         raise ValueError(
             f"server returned a webpage instead of a CSV — this file "
@@ -253,7 +258,8 @@ def _load_fixtures_csv():
     resp = requests.get(FIXTURES_URL, headers=CSV_HEADERS, timeout=20)
     resp.raise_for_status()
 
-    lines = resp.text.splitlines()
+    text = resp.content.decode("utf-8-sig", errors="replace")
+    lines = text.splitlines()
     header_idx = next(
         (i for i, line in enumerate(lines) if line.startswith("Div,Date")), None)
     if header_idx is None:

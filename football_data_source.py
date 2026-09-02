@@ -54,7 +54,7 @@ def _attempt(url):
     if resp.status_code != 200:
         return None, f"HTTP {resp.status_code}"
 
-    text = resp.text
+    text = resp.content.decode("utf-8-sig", errors="replace")
     if not text.strip():
         return None, "empty response"
     if text.lstrip()[:1] == "<":
