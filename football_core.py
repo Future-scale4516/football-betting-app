@@ -7,9 +7,18 @@ there's one implementation, not two.
 
 import io
 from datetime import datetime, date, timezone
+from zoneinfo import ZoneInfo
 import requests
 import pandas as pd
 import streamlit as st
+
+# Odds API timestamps are UTC; fixtures.csv times are already UK-local.
+# Streamlit Cloud's server clock runs in UTC regardless of where you are,
+# so ANY bare .astimezone()/datetime.now() silently uses server time, not
+# UK time — that's what caused kickoff times to show an hour early during
+# BST. Everything below converts explicitly to Europe/London instead of
+# relying on the server's local timezone.
+UK_TZ = ZoneInfo("Europe/London")
 
 CSV_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; football-betting-app)"}
 
@@ -44,6 +53,7 @@ from plausibility import check_plausibility
 from traffic_light import classify
 from promoted_seeding import seed_missing_teams
 from env_config import require_api_key
+from football_data_source import load_results as _load_current_season_results
 
 ODDS_BASE_URL = "https://api.the-odds-api.com/v4/sports/{key}/odds/"
 FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
@@ -105,11 +115,6 @@ def sidebar_date():
     """
     st.sidebar.markdown("### Date")
     sel = st.sidebar.date_input("Fixtures for:", value=date.today())
-    st.sidebar.caption(
-        "Leagues start at different times — EPL doesn't begin until "
-        "mid-August, so an empty result for today is expected rather "
-        "than an error."
-    )
 
     st.sidebar.markdown("### Mode")
     model_only = st.sidebar.toggle(
@@ -167,29 +172,33 @@ def sort_picker(df, options, key):
 # ------------------------------------------------------------ odds / fixtures
 
 def _event_date(event) -> date:
-    """Odds API gives commence_time as ISO UTC."""
+    """Odds API gives commence_time as ISO UTC — converted to UK time
+    explicitly (see UK_TZ note above) rather than server-local."""
     ts = event.get("commence_time")
     if not ts:
         return None
-    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().date()
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(UK_TZ).date()
 
 
 def _event_kickoff(event):
-    """Returns (kickoff_local_str, started_bool) from an Odds API event."""
+    """Returns (kickoff_local_str, started_bool) from an Odds API event,
+    in UK time regardless of what timezone the server itself runs in."""
     ts = event.get("commence_time")
     if not ts:
         return None, False
-    dt_local = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
-    started = dt_local <= datetime.now().astimezone()
-    return dt_local.strftime("%H:%M"), started
+    dt_uk = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(UK_TZ)
+    started = dt_uk <= datetime.now(UK_TZ)
+    return dt_uk.strftime("%H:%M"), started
 
 
 def _fixture_kickoff(target_date: date, time_str):
-    """Returns (kickoff_str, started_bool) for a fixtures.csv row, which
-    gives a bare local time with no date attached to compare against."""
-    if target_date < date.today():
+    """Returns (kickoff_str, started_bool) for a fixtures.csv row. The
+    time itself is already UK-local as published, so it's shown as-is —
+    only the 'has this started' comparison needs an explicit UK 'now'."""
+    today_uk = datetime.now(UK_TZ).date()
+    if target_date < today_uk:
         return time_str, True
-    if target_date > date.today():
+    if target_date > today_uk:
         return time_str, False
     if not time_str or not isinstance(time_str, str):
         return time_str, False
@@ -197,7 +206,19 @@ def _fixture_kickoff(target_date: date, time_str):
         kt = datetime.strptime(time_str.strip(), "%H:%M").time()
     except ValueError:
         return time_str, False
-    return time_str, datetime.now().time() >= kt
+    return time_str, datetime.now(UK_TZ).time() >= kt
+
+
+def kickoff_sort_key(kickoff):
+    """Sorts 'HH:MM' strings chronologically; missing/unparseable kickoff
+    times sort last rather than crashing or sorting as if past midnight."""
+    if not kickoff or not isinstance(kickoff, str):
+        return (1, 0)
+    try:
+        h, m = kickoff.split(":")
+        return (0, int(h) * 60 + int(m))
+    except (ValueError, AttributeError):
+        return (1, 0)
 
 
 def fetch_odds(sport_key: str):
@@ -221,7 +242,7 @@ def _load_fixtures_csv():
     """One download shared by every league. Previously this file was
     fetched once per league — 8 identical downloads per run, which was
     the main reason model-only mode felt slow."""
-    return pd.read_csv(FIXTURES_URL)
+    return _fetch_csv(FIXTURES_URL)
 
 
 def fetch_upcoming_fixtures(div_code: str, target: date):
@@ -283,11 +304,32 @@ def _avg_market(event, market_key, name_map, line=None):
 # ------------------------------------------------------------------ pipeline
 
 @st.cache_data(ttl=900, show_spinner=False)
-def fit_model_for_league(league_name: str):
+def fit_model_for_league(league_name: str, as_of_date: date = None):
+    """Fits on last season in full, plus this season's completed games
+    strictly before as_of_date.
+
+    Added after results tracking showed goals running well above what a
+    last-season-only fit expected (BTTS/Over picks underconfident, Under
+    picks overconfident across most leagues) — this was previously fitting
+    on last season ONLY, with no way to pick up this season's actual form
+    as it happens, even though the Results page's backtest already did
+    this blending. Live picks were silently stuck a full season behind.
+    """
     df = _fetch_csv(data_url(league_name))
     df = df[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]].dropna()
     fixtures = list(df.itertuples(index=False, name=None))
-    teams = sorted(set(df["HomeTeam"]) | set(df["AwayTeam"]))
+
+    if as_of_date is not None:
+        cfg = LEAGUES[league_name]
+        current, _ = _load_current_season_results(cfg["data_code"], as_of_date)
+        if current is not None:
+            prior = current[(current["_date"] < as_of_date)
+                             & current["FTHG"].notna() & current["FTAG"].notna()]
+            fixtures += list(
+                prior[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]]
+                .itertuples(index=False, name=None))
+
+    teams = sorted({t for fx in fixtures for t in (fx[0], fx[1])})
     return fit_league(fixtures, teams)
 
 
@@ -359,7 +401,7 @@ def run_all(target_date: date, model_only: bool = False):
 
     for league, cfg in LEAGUES.items():
         try:
-            model = fit_model_for_league(league)
+            model = fit_model_for_league(league, target_date)
         except Exception as e:
             notes.append(f"{league}: couldn't fit model ({e})")
             continue

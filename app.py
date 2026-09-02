@@ -1,8 +1,9 @@
 """
 Football Betting Model — landing page.
 
-Multi-page app: see the pages/ folder for Today's Picks, Most Likely,
-Suggested Bets, and Results.
+Multi-page app: see the pages/ folder for Today's Picks (which now
+includes Match Result, BTTS, Over 2.5, and Over 1.5 as tabs), Suggested
+Bets, and Results.
 
 Run with:  streamlit run app.py
 """
@@ -15,35 +16,20 @@ sel_date, model_only = sidebar_date()
 
 st.title("⚽ Football Betting Model")
 st.caption(
-    "Dixon-Coles goal model across six European leagues, compared against "
+    "Dixon-Coles goal model across eight leagues, compared against "
     "de-vigged bookmaker prices to surface genuine edges — not tips."
 )
 
 st.markdown("""
 ### Pages
 
-- **Today's Picks** — every fixture and market for the selected date, with model
-  probability vs market probability and a traffic-light rating.
-- **Most Likely** — ranked purely by model confidence, filterable by league and
-  market. This answers *"what does the model expect"*, not *"where's the value"*.
+- **Today's Picks** — Match Result, BTTS, Over 2.5, and Over 1.5 as tabs.
+  Match Result compares model vs market with a traffic-light rating; the
+  other three rank fixtures purely by model confidence.
 - **Suggested Bets** — 5–6 fold accumulators, split into English (excluding EPL)
   and Rest of Europe, one per market.
-- **Results** — logged picks, P/L, and closing-line value once settled.
-
-### Read this before staking anything
-
-Nothing here has been validated against live results yet. The backtest showed
-log loss around 1.06 against a 1.099 random-guess baseline — better than
-guessing, but only slightly, and the calibration was noisy. Traffic-light
-thresholds are reasoned starting points, not numbers earned from real outcomes.
-
-Known issues being tracked:
-- The model shows unusually large edges on elite home sides (Barcelona, Bayern).
-  Regularisation didn't fix this; the plausibility ceiling contains it, but it's
-  not properly calibrated.
-- Promoted and relegated teams run on provisional ratings and are always capped
-  at 🔵 verify.
-- League One and Two have no odds coverage, so they're forecast-only.
+- **Results** — loads a past date and grades what the model would have
+  predicted against the real outcome.
 """)
 
 st.info("Pick a date in the sidebar, then head to **Today's Picks**.")
