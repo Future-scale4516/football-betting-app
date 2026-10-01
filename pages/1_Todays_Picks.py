@@ -48,6 +48,17 @@ def _card(r, show_edge=True):
     )
 
 
+def _sort_ranked(view, key):
+    """Shared 'Sort by' control for the three model-confidence tabs —
+    Model % (default), Kickoff time, or Odds where they exist."""
+    choice = st.selectbox("Sort by:", ["Model %", "Kickoff time", "Odds"], key=key)
+    if choice == "Kickoff time":
+        return view.assign(_k=view["kickoff"].map(kickoff_sort_key)).sort_values("_k")
+    if choice == "Odds":
+        return view.sort_values("odds", ascending=False, na_position="last")
+    return view.sort_values("model_prob", ascending=False)
+
+
 tab_match, tab_btts, tab_o25, tab_o15 = st.tabs(
     ["⚽ Match Result", "🥅 BTTS", "📈 Over 2.5", "📊 Over 1.5"])
 
@@ -90,7 +101,7 @@ with tab_match:
         elif sort_choice == "Model %":
             view = view.sort_values("model_prob", ascending=False)
         else:
-            view = view.sort_values("odds", ascending=False)
+            view = view.sort_values("odds", ascending=False, na_position="last")
 
         for _, r in view.iterrows():
             _card(r, show_edge=True)
@@ -109,12 +120,12 @@ with tab_btts:
     with c2:
         top_n = st.number_input("Show", 5, 100, 20, 5, key="bt_n")
 
-    view = btts[btts["league"].isin(league_filter)].sort_values(
-        "model_prob", ascending=False).head(int(top_n))
+    view = btts[btts["league"].isin(league_filter)]
 
     if view.empty:
         st.info("Nothing matches those filters.")
     else:
+        view = _sort_ranked(view, key="bt_sort").head(int(top_n))
         for _, r in view.iterrows():
             _card(r, show_edge=False)
 
@@ -129,12 +140,12 @@ with tab_o25:
     with c2:
         top_n = st.number_input("Show", 5, 100, 20, 5, key="o25_n")
 
-    view = o25[o25["league"].isin(league_filter)].sort_values(
-        "model_prob", ascending=False).head(int(top_n))
+    view = o25[o25["league"].isin(league_filter)]
 
     if view.empty:
         st.info("Nothing matches those filters.")
     else:
+        view = _sort_ranked(view, key="o25_sort").head(int(top_n))
         for _, r in view.iterrows():
             _card(r, show_edge=False)
 
@@ -149,11 +160,11 @@ with tab_o15:
     with c2:
         top_n = st.number_input("Show", 5, 100, 20, 5, key="o15_n")
 
-    view = o15[o15["league"].isin(league_filter)].sort_values(
-        "model_prob", ascending=False).head(int(top_n))
+    view = o15[o15["league"].isin(league_filter)]
 
     if view.empty:
         st.info("Nothing matches those filters.")
     else:
+        view = _sort_ranked(view, key="o15_sort").head(int(top_n))
         for _, r in view.iterrows():
             _card(r, show_edge=False)
