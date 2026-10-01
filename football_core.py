@@ -157,6 +157,7 @@ from traffic_light import classify
 from promoted_seeding import seed_missing_teams
 from env_config import require_api_key
 from football_data_source import load_results as _load_current_season_results
+from calibration import calibrate_markets
 
 ODDS_BASE_URL = "https://api.the-odds-api.com/v4/sports/{key}/odds/"
 FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
@@ -628,7 +629,7 @@ def run_all(target_date: date, model_only: bool = False):
                 seeded = seed_methods.get(home) or seed_methods.get(away)
                 kickoff, started = _event_kickoff(e)
                 grid = score_matrix(home, away, model)
-                markets = derive_markets(grid)
+                markets = calibrate_markets(derive_markets(grid))
 
                 odds_data = {
                     "h2h": _avg_market(e, "h2h", {
@@ -659,7 +660,7 @@ def run_all(target_date: date, model_only: bool = False):
                 if home not in model["attack"] or away not in model["attack"]:
                     continue
                 grid = score_matrix(home, away, model)
-                markets = derive_markets(grid)
+                markets = calibrate_markets(derive_markets(grid))
                 all_rows.extend(_evaluate(
                     f"{home} vs {away}", league, markets, {},
                     seed_methods.get(home) or seed_methods.get(away),

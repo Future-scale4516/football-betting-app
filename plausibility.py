@@ -10,9 +10,21 @@ for manual review instead of letting a big number auto-qualify as
 trustworthy.
 """
 
+# NOTE (post-calibration): these thresholds were set when the model's raw
+# probabilities were badly overconfident — the ceiling was doing the job a
+# calibration layer should have been doing. Now that calibration.py pulls
+# extremes toward the middle, the model rarely produces probabilities above
+# ~85% or below ~15% at all, so the probability bounds below almost never
+# fire. They're kept as a backstop against genuine data errors (a fixture
+# with a corrupted rating, say) rather than as the primary safety net.
+#
+# The edge ceiling still matters: calibration fixes systematic
+# overconfidence, not the model's blind spots about injuries, managerial
+# changes or transfers. A large edge is still more often a blind spot than
+# real value.
 MAX_TRUSTED_EDGE = 0.08   # edges above this need manual sanity-check, not auto-green
-MIN_PLAUSIBLE_PROB = 0.03  # below this, "the model thinks this is almost impossible" is
-MAX_PLAUSIBLE_PROB = 0.92  # itself suspicious for a competitive top-flight fixture
+MIN_PLAUSIBLE_PROB = 0.02  # a backstop for data errors, not everyday overconfidence
+MAX_PLAUSIBLE_PROB = 0.95
 
 
 def check_plausibility(model_prob: float, market_prob: float, edge: float):

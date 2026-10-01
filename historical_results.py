@@ -12,6 +12,7 @@ import streamlit as st
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets
 from league_config import LEAGUES, data_url
 from auto_settle import grade, find_closing_odds
+from calibration import calibrate_markets
 from football_data_source import load_results, _attempt, BASE
 
 MARKET_SELECTIONS = {
@@ -98,7 +99,7 @@ def build_historical_results(target_date, leagues,
                 continue
 
             grid = score_matrix(home, away, model)
-            mkts = derive_markets(grid)
+            mkts = calibrate_markets(derive_markets(grid))
             hg, ag = int(g["FTHG"]), int(g["FTAG"])
 
             for market in markets:
