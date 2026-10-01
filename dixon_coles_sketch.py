@@ -54,21 +54,35 @@ def match_log_likelihood(params, fixtures, teams):
         ll += np.log(max(p, 1e-10))
     return -ll  # negative for minimisation
 
-def fit_league(fixtures, teams, reg_lambda=0.01):
-    """
-    fixtures: recent results for ONE league.
-    reg_lambda: L2 regularization strength. Shrinks every team's attack/
-    defence parameter toward the league mean. Added after the live odds run
-    showed several elite home sides (Barcelona, Bayern, Real Madrid) with
-    suspiciously large edges — the standard fix for that failure mode in
-    unregularized Poisson team-strength models. NOTE: at 0.01 this did NOT
-    measurably shrink those edges in testing; the plausibility ceiling is
-    what actually contains them. Raise it if you want to retest.
+DEFAULT_XI = 0.0018   # Dixon & Coles' published decay rate
 
-    VECTORIZED: the likelihood used to loop over every fixture in Python on
-    every optimizer iteration, which made fitting 8 leagues painfully slow.
-    Everything below operates on numpy arrays instead — same maths, same
-    results, dramatically faster.
+
+def fit_league(fixtures, teams, reg_lambda=0.01, xi=DEFAULT_XI):
+    """
+    fixtures: results for ONE league. Each is either
+        (home, away, home_goals, away_goals)                  — unweighted
+    or  (home, away, home_goals, away_goals, days_before_now)  — time-decayed
+
+    xi: time-decay rate. Each match is weighted exp(-xi * days_ago), so
+    recent form counts for more. Only applies when fixtures carry a 5th
+    element; 4-tuples are treated as equally weighted so older callers
+    keep working.
+
+    WHY THIS MATTERS NOW: an earlier test of time-decay (on one season
+    alone) showed almost no effect, so it was dropped. That test no longer
+    applies — the model now fits on last season PLUS the current season
+    blended together, and without decay a match from 14 months ago counts
+    exactly as much as one from last week. At xi=0.0018 a year-old match
+    carries roughly 50% the weight of today's, which is the behaviour the
+    blended fit needs.
+
+    reg_lambda: L2 regularization, shrinking attack/defence toward the
+    league mean. NOTE: at 0.01 this did NOT measurably shrink the large
+    edges seen on elite home sides; the plausibility ceiling is what
+    actually contains those. Raise it if you want to retest.
+
+    VECTORIZED: the likelihood operates on numpy arrays rather than
+    looping per fixture, which is what makes fitting 8 leagues fast.
     """
     n = len(teams)
     idx = {t: i for i, t in enumerate(teams)}
@@ -78,6 +92,12 @@ def fit_league(fixtures, teams, reg_lambda=0.01):
     away_idx = np.array([idx[f[1]] for f in fixtures])
     hg = np.array([f[2] for f in fixtures], dtype=float)
     ag = np.array([f[3] for f in fixtures], dtype=float)
+
+    if fixtures and len(fixtures[0]) > 4:
+        days_ago = np.array([f[4] for f in fixtures], dtype=float)
+        weights = np.exp(-xi * np.maximum(days_ago, 0))
+    else:
+        weights = np.ones(len(fixtures))
 
     # Masks for the four scorelines Dixon-Coles corrects
     m00 = (hg == 0) & (ag == 0)
@@ -103,7 +123,7 @@ def fit_league(fixtures, teams, reg_lambda=0.01):
         tau_vals[m11] = 1 - rho
         tau_vals = np.maximum(tau_vals, 1e-10)  # keep the log finite
 
-        ll = np.sum(log_p + np.log(tau_vals))
+        ll = np.sum(weights * (log_p + np.log(tau_vals)))
         penalty = reg_lambda * (np.sum(attack ** 2) + np.sum(defence ** 2))
         return -ll + penalty
 

@@ -14,7 +14,17 @@ below. Bump this each August.
 import pandas as pd
 from league_config import LEAGUES
 
-CURRENT_SEASON = "2627"   # 2026/27 — update when the season rolls over
+def _current_season_code(today=None):
+    """Derived rather than hardcoded — this used to be a literal string
+    that would have silently broken every August when the season rolled
+    over. football-data labels 2026/27 as '2627'; seasons start in July."""
+    from datetime import date as _date
+    today = today or _date.today()
+    start = today.year if today.month >= 7 else today.year - 1
+    return f"{str(start)[-2:]}{str(start + 1)[-2:]}"
+
+
+CURRENT_SEASON = _current_season_code()
 RESULTS_URL = "https://www.football-data.co.uk/mmz4281/{season}/{code}.csv"
 
 # Closing-odds columns, best first. football-data's naming varies by file,

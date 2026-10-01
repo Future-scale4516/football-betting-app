@@ -1,0 +1,26 @@
+{
+  "fetched_at": "2026-10-01T22:47:45",
+  "previous_season": "2526",
+  "current_season": "2627",
+  "leagues_previous": [
+    "Premier League",
+    "EFL Championship",
+    "League One",
+    "League Two",
+    "Bundesliga",
+    "Serie A",
+    "La Liga",
+    "Ligue 1"
+  ],
+  "leagues_current": [
+    "Premier League",
+    "EFL Championship",
+    "League One",
+    "League Two",
+    "Bundesliga",
+    "Serie A",
+    "La Liga",
+    "Ligue 1"
+  ],
+  "fixtures": true
+}

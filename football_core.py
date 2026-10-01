@@ -6,6 +6,7 @@ there's one implementation, not two.
 """
 
 import io
+import time
 from datetime import datetime, date, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -23,16 +24,113 @@ UK_TZ = ZoneInfo("Europe/London")
 CSV_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; football-betting-app)"}
 
 
+import json
+import urllib.parse
+from pathlib import Path
+
+# Stopgap only — see _get_with_retry below for why this exists and its
+# real limitations. Not a permanent fix.
+_PROXY_PREFIX = "https://api.allorigins.win/raw?url="
+
+# Committed data snapshot, produced by refresh_data.py on a machine whose
+# IP isn't blocked. This is the PRIMARY data source — live fetching is
+# only a fallback now, because Streamlit Cloud's IPs get blocked by
+# football-data.co.uk's anti-bot protection.
+DATA_DIR = Path(__file__).parent / "data"
+
+
+def snapshot_manifest():
+    """Returns the snapshot's manifest dict, or None if there's no
+    snapshot committed. Used to show the user how fresh the data is."""
+    path = DATA_DIR / "manifest.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def _read_snapshot(filename: str):
+    """Reads a file from the committed snapshot, or None if absent."""
+    path = DATA_DIR / filename
+    if not path.exists():
+        return None
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        try:
+            return pd.read_csv(path, engine="python", on_bad_lines="skip")
+        except Exception:
+            return None
+
+
+def _current_season_code(target_date):
+    """football-data labels 2026/27 as '2627'. Seasons start in July."""
+    start = target_date.year if target_date.month >= 7 else target_date.year - 1
+    return f"{str(start)[-2:]}{str(start + 1)[-2:]}"
+
+
+def _read_current_season_snapshot(data_code: str, target_date):
+    """Current-season results from the snapshot, with _date parsed so it
+    matches what the live loader returns."""
+    df = _read_snapshot(f"{_current_season_code(target_date)}_{data_code}.csv")
+    if df is None or "Date" not in df.columns:
+        return None
+    df = df.copy()
+    df["_date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce").dt.date
+    return df
+
+
+def _get_with_retry(url: str, headers: dict, timeout=20, retries=2):
+    """football-data.co.uk occasionally returns a transient 503/502/504
+    when its own server is briefly overloaded — nothing wrong with the
+    request, just bad timing. A short retry clears most of these rather
+    than giving up on the first attempt.
+
+    If direct retries are exhausted, falls back to a public CORS proxy
+    as a temporary workaround for the (different, more serious) problem
+    of Streamlit Cloud's own server IP being blocked by anti-bot
+    protection on the source site — a proxy makes the request from a
+    different IP entirely. This is duct tape, not a fix: public proxies
+    are themselves unreliable and rate-limited, and this should be
+    replaced with a proper non-cloud-IP data pipeline when there's time
+    for it (see the conversation this was added in)."""
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            if resp.status_code in (502, 503, 504) and attempt < retries:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.RequestException as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(1.5 * (attempt + 1))
+
+    try:
+        proxied_url = _PROXY_PREFIX + urllib.parse.quote(url, safe="")
+        resp = requests.get(proxied_url, timeout=timeout + 10)
+        resp.raise_for_status()
+        return resp
+    except requests.exceptions.RequestException:
+        pass  # proxy failed too — raise the original, more informative error
+
+    raise last_exc
+
+
 def _fetch_csv(url: str) -> pd.DataFrame:
     """Bare pd.read_csv(url) sends no User-Agent, and football-data.co.uk
     sometimes returns an ambiguous HTTP 300 to requests like that instead
     of the file. Fetching with a normal header fixes that.
 
     Also handles: an HTML page returned instead of a CSV (usually means
-    the file doesn't exist yet), and a stray short/blank row mid-file
-    (falls back to skipping just that row)."""
-    resp = requests.get(url, headers=CSV_HEADERS, timeout=20)
-    resp.raise_for_status()
+    the file doesn't exist yet), a stray short/blank row mid-file (falls
+    back to skipping just that row), and a transient 502/503/504 (retried
+    a couple of times before giving up — see _get_with_retry)."""
+    resp = _get_with_retry(url, CSV_HEADERS)
 
     # requests guesses ISO-8859-1 for text/* responses with no explicit
     # charset, which mangles a UTF-8 byte-order-mark into garbage instead
@@ -53,7 +151,7 @@ def _fetch_csv(url: str) -> pd.DataFrame:
                             on_bad_lines="skip")
 
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets
-from league_config import LEAGUES, data_url, normalise_name
+from league_config import LEAGUES, data_url, normalise_name, SEASON
 from plausibility import check_plausibility
 from traffic_light import classify
 from promoted_seeding import seed_missing_teams
@@ -138,6 +236,31 @@ def sidebar_date():
     if st.sidebar.button("🔄 Refresh (re-fit + re-fetch)"):
         st.cache_data.clear()
         st.rerun()
+
+    # Snapshot freshness — the app reads committed data, so it's only as
+    # current as the last refresh_data.py run. Surfacing the age means
+    # stale results are obvious rather than silently wrong.
+    manifest = snapshot_manifest()
+    st.sidebar.markdown("### Data")
+    if manifest is None:
+        st.sidebar.warning(
+            "No local data snapshot — falling back to live fetching, which "
+            "Streamlit Cloud's IP is often blocked from. Run "
+            "`refresh_data.py` locally and commit the data/ folder."
+        )
+    else:
+        try:
+            fetched = datetime.fromisoformat(manifest["fetched_at"])
+            age_days = (datetime.now() - fetched).days
+            label = f"Updated {fetched:%d %b %H:%M} ({age_days}d ago)"
+            if age_days >= 7:
+                st.sidebar.warning(
+                    f"{label} — stale. Re-run `refresh_data.py` and push.")
+            else:
+                st.sidebar.caption(label)
+        except Exception:
+            st.sidebar.caption("Snapshot present (date unreadable)")
+
     return sel, model_only
 
 
@@ -254,9 +377,15 @@ def _load_fixtures_csv():
     names, silently producing a dataframe with no 'Div' column and no
     error. Searching for the real header line fixes that regardless of
     what (if anything) comes before it.
+
+    Reads the committed snapshot first (see DATA_DIR at the top) since
+    Streamlit Cloud's IP is blocked from fetching this directly.
     """
-    resp = requests.get(FIXTURES_URL, headers=CSV_HEADERS, timeout=20)
-    resp.raise_for_status()
+    snap = _read_snapshot("fixtures.csv")
+    if snap is not None and "Div" in snap.columns:
+        return snap
+
+    resp = _get_with_retry(FIXTURES_URL, CSV_HEADERS)
 
     text = resp.content.decode("utf-8-sig", errors="replace")
     lines = text.splitlines()
@@ -347,19 +476,52 @@ def fit_model_for_league(league_name: str, as_of_date: date = None):
     as it happens, even though the Results page's backtest already did
     this blending. Live picks were silently stuck a full season behind.
     """
-    df = _fetch_csv(data_url(league_name))
-    df = df[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]].dropna()
-    fixtures = list(df.itertuples(index=False, name=None))
+    reference_date = as_of_date or datetime.now(UK_TZ).date()
+    cfg = LEAGUES[league_name]
+
+    # Snapshot first — see DATA_DIR note at the top of this file.
+    df = _read_snapshot(f"{SEASON}_{cfg['data_code']}.csv")
+    if df is None:
+        df = _fetch_csv(data_url(league_name))
+
+    keep = ["HomeTeam", "AwayTeam", "FTHG", "FTAG"]
+    has_dates = "Date" in df.columns
+    if has_dates:
+        df = df[keep + ["Date"]].dropna(subset=keep)
+        df["_date"] = pd.to_datetime(df["Date"], dayfirst=True,
+                                      errors="coerce").dt.date
+    else:
+        df = df[keep].dropna()
+
+    def _rows_with_age(frame):
+        """Each fixture carries how many days before reference_date it was
+        played, so fit_league can weight recent form more heavily. Without
+        this, a match from last autumn counts as much as one from last
+        week — which matters a lot now that last season and this season
+        are blended into one fit."""
+        out = []
+        for r in frame.itertuples(index=False):
+            played = getattr(r, "_date", None)
+            days = ((reference_date - played).days
+                    if played is not None and not pd.isna(played) else 365)
+            out.append((r.HomeTeam, r.AwayTeam, r.FTHG, r.FTAG, max(days, 0)))
+        return out
+
+    if has_dates:
+        fixtures = _rows_with_age(df)
+    else:
+        # No dates available — treat the whole (previous) season as a year old
+        fixtures = [(r.HomeTeam, r.AwayTeam, r.FTHG, r.FTAG, 365)
+                    for r in df.itertuples(index=False)]
 
     if as_of_date is not None:
-        cfg = LEAGUES[league_name]
-        current, _ = _load_current_season_results(cfg["data_code"], as_of_date)
+        current = _read_current_season_snapshot(cfg["data_code"], as_of_date)
+        if current is None:
+            current, _ = _load_current_season_results(cfg["data_code"], as_of_date)
         if current is not None:
             prior = current[(current["_date"] < as_of_date)
                              & current["FTHG"].notna() & current["FTAG"].notna()]
-            fixtures += list(
-                prior[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]]
-                .itertuples(index=False, name=None))
+            fixtures += _rows_with_age(prior)
 
     teams = sorted({t for fx in fixtures for t in (fx[0], fx[1])})
     return fit_league(fixtures, teams)
