@@ -16,7 +16,7 @@ sel_date, model_only = sidebar_date()
 
 st.title("⚽ Football Betting Model")
 st.caption(
-    "Dixon-Coles goal model across eight leagues, compared against "
+    "Dixon-Coles goal model across nine domestic leagues (plus market-only UEFA competitions), compared against "
     "de-vigged bookmaker prices to surface genuine edges — not tips."
 )
 

@@ -70,6 +70,8 @@ def build_historical_results(target_date, leagues,
     rows, notes, diagnostics = [], [], {}
 
     for league in leagues:
+        if not LEAGUES.get(league, {}).get("data_code"):
+            continue          # market-only competition: no results history to grade against
         if uploaded and league in uploaded:
             results_df, log = uploaded[league], ["(uploaded manually)"]
         else:

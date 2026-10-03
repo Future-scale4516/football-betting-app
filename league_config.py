@@ -67,7 +67,47 @@ LEAGUES = {
         "odds_key": "soccer_france_ligue_one",
         "has_odds": True,
     },
+
+    # ---- MARKET-ONLY competitions -------------------------------------
+    # Fixtures and bookmaker prices only — there is NO model behind these.
+    # data_code is None because there is no results history to fit on:
+    # football-data.co.uk doesn't carry UEFA competition results, each club
+    # plays only ~8 league-phase games, and Dixon-Coles ratings are relative
+    # to a league's own average so can't be compared across leagues. A proper
+    # model needs cross-league strength ratings (e.g. club Elo) — a separate
+    # piece of work. Until then these show the market's own probabilities,
+    # clearly labelled, rather than a model that can't price them.
+    "UEFA Champions League": {
+        "data_code": None,
+        "odds_key": "soccer_uefa_champs_league",
+        "has_odds": True,
+        "market_only": True,
+    },
+    "UEFA Europa League": {
+        "data_code": None,
+        "odds_key": "soccer_uefa_europa_league",
+        "has_odds": True,
+        "market_only": True,
+    },
+    "UEFA Conference League": {
+        "data_code": None,
+        "odds_key": "soccer_uefa_europa_conference_league",
+        "has_odds": True,
+        "market_only": True,
+    },
+    "UEFA Nations League": {
+        "data_code": None,
+        "odds_key": "soccer_uefa_nations_league",
+        "has_odds": True,
+        "market_only": True,
+    },
 }
+
+
+def modelled_leagues():
+    """Leagues the Dixon-Coles model covers (i.e. with results data)."""
+    return [name for name, cfg in LEAGUES.items() if cfg.get("data_code")]
+
 
 # Odds API name -> football-data.co.uk name, per league.
 # Only English football is filled in from what we've already confirmed
@@ -157,6 +197,11 @@ TEAM_NAME_MAPS = {
         # Auxerre, Brest, Lorient — check after re-run, may be promoted.
     },
 }
+
+
+# Every league gets a name map, empty if nothing has been needed yet.
+for _name in LEAGUES:
+    TEAM_NAME_MAPS.setdefault(_name, {})
 
 
 def data_url(league_name: str) -> str:

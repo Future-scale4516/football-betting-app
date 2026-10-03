@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from football_core import setup_page, market_label
 from historical_results import build_historical_results
 from football_data_source import parse_uploaded, season_candidates
-from league_config import LEAGUES
+from league_config import LEAGUES, modelled_leagues
 
 setup_page("Football Model — Results")
 
@@ -19,7 +19,7 @@ st.caption(
 st.sidebar.markdown("### Date")
 sel_date = st.sidebar.date_input("Results for:", value=date.today() - timedelta(days=1))
 
-league_options = list(LEAGUES.keys())
+league_options = modelled_leagues()   # UEFA competitions have no model to grade
 league_filter = st.multiselect("Leagues", league_options, default=league_options)
 
 show_all = st.checkbox(

@@ -96,6 +96,8 @@ def main():
     print("Previous season (model training base):")
     for name, cfg in LEAGUES.items():
         code = cfg["data_code"]
+        if not code:
+            continue          # market-only competition — nothing to download
         try:
             text = fetch(BASE.format(season=SEASON, code=code))
             if save_csv(text, DATA_DIR / f"{SEASON}_{code}.csv", name):
@@ -106,6 +108,8 @@ def main():
     print("\nCurrent season (in-season form):")
     for name, cfg in LEAGUES.items():
         code = cfg["data_code"]
+        if not code:
+            continue          # market-only competition — nothing to download
         try:
             text = fetch(BASE.format(season=cur_season, code=code))
             if save_csv(text, DATA_DIR / f"{cur_season}_{code}.csv", name):

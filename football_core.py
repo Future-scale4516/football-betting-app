@@ -170,7 +170,7 @@ REST_OF_EUROPE = ["Bundesliga", "Serie A", "La Liga", "Ligue 1"]
 
 ACCA_MARKETS = ["1X2", "BTTS", "O/U 2.5"]
 
-TIER_ICON = {"green": "🟢", "amber": "🟡", "verify": "🔵", "red": "⚪"}
+TIER_ICON = {"green": "🟢", "amber": "🟡", "verify": "🔵", "red": "⚪", "market": "📊"}
 
 
 def market_label(market: str, selection: str) -> str:
@@ -615,7 +615,7 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
             "market_prob": market_prob, "odds": odds, "edge": edge,
             "tier": tier, "reason": reason,
             "kickoff": kickoff, "started": started,
-            "seeded": bool(seeded),
+            "seeded": bool(seeded), "prob_source": "model",
         })
 
     m = markets["1X2"]
@@ -661,6 +661,14 @@ def run_all(target_date: date, model_only: bool = False):
     all_rows, notes = [], []
 
     for league, cfg in LEAGUES.items():
+        if cfg.get("market_only"):
+            if model_only:
+                continue      # these need bookmaker prices, which this mode ignores
+            m_rows, m_notes = _market_only_league(league, cfg, target_date)
+            all_rows.extend(m_rows)
+            notes.extend(m_notes)
+            continue
+
         try:
             model = fit_model_for_league(league, target_date)
         except Exception as e:
@@ -717,6 +725,74 @@ def run_all(target_date: date, model_only: bool = False):
             all_rows.extend(_forecast_fixtures(league, model, fixtures))
 
     return pd.DataFrame(all_rows), notes
+
+
+# ------------------------------------------------- market-only competitions
+#
+# UEFA club competitions and the Nations League have no model (see
+# league_config.py for why). These rows carry the bookmakers' own de-vigged
+# probabilities, tagged prob_source="market" so every page can label them
+# honestly instead of calling them "Model %".
+
+def _market_rows(fixture, league, odds_data, kickoff, started):
+    rows = []
+
+    def add(market, selection, prob, odds):
+        rows.append({
+            "league": league, "fixture": fixture, "market": market,
+            "selection": selection,
+            "model_prob": prob,          # field reused so ranking/sorting just works
+            "market_prob": prob, "odds": odds, "edge": None,
+            "tier": "market",
+            "reason": "Bookmaker-implied probability — no model for this competition",
+            "kickoff": kickoff, "started": started,
+            "seeded": False, "prob_source": "market",
+        })
+
+    h2h = odds_data.get("h2h")
+    if h2h:
+        p = devig(h2h["home"], h2h["draw"], h2h["away"])
+        add("1X2", "Home", p[0], h2h["home"])
+        add("1X2", "Draw", p[1], h2h["draw"])
+        add("1X2", "Away", p[2], h2h["away"])
+    for line in (1.5, 2.5):
+        t = odds_data.get(f"totals_{line}")
+        if t:
+            p = devig(t["over"], t["under"])
+            add(f"O/U {line}", f"Over {line}", p[0], t["over"])
+            add(f"O/U {line}", f"Under {line}", p[1], t["under"])
+    return rows
+
+
+def _market_only_league(league, cfg, target_date):
+    """Returns (rows, notes) for a competition with no model."""
+    notes = []
+
+    # The events endpoint is free; the odds endpoint costs credits. Check
+    # for games first so a day with none (most days, for UEFA) spends nothing.
+    if _ODDS_KEY:
+        ev, err = fetch_events(cfg["odds_key"], _ODDS_KEY)
+        if not err and not parse_events(ev, target_date):
+            return [], notes
+
+    events, err = fetch_odds(cfg["odds_key"])
+    if err:
+        return [], [f"{league}: {err}"]
+
+    rows = []
+    for e in events:
+        if _event_date(e) != target_date:
+            continue
+        kickoff, started = _event_kickoff(e)
+        odds_data = {"h2h": _avg_market(e, "h2h", {
+            e["home_team"]: "home", "Draw": "draw", e["away_team"]: "away"})}
+        for line in (1.5, 2.5):
+            odds_data[f"totals_{line}"] = _avg_market(
+                e, "totals", {"Over": "over", "Under": "under"}, line=line)
+        rows.extend(_market_rows(
+            f"{e['home_team']} vs {e['away_team']}", league, odds_data,
+            kickoff, started))
+    return rows, notes
 
 
 # ------------------------------------------------------- manual fixture entry

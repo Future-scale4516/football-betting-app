@@ -51,7 +51,8 @@ def summarise_snapshot(path):
         days = sorted({d for d in g["_d"].dropna()})
         span = f"{days[0]} -> {days[-1]}" if days else "no valid dates"
         lines.append(f"  {div:4s} {len(g):3d} fixtures   {span}")
-    wanted = {cfg["data_code"]: name for name, cfg in LEAGUES.items()}
+    wanted = {cfg["data_code"]: name for name, cfg in LEAGUES.items()
+              if cfg.get("data_code")}
     missing = [f"{c} ({n})" for c, n in wanted.items() if c not in set(df["Div"])]
     lines.append("  leagues with NO fixtures in the file: "
                  + (", ".join(missing) if missing else "none"))

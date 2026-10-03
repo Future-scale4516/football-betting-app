@@ -4,7 +4,7 @@ from football_core import (setup_page, sidebar_date, run_all, render_pick_card,
                             TIER_ICON, market_label, kickoff_sort_key,
                             add_manual_fixtures, clear_manual_fixtures,
                             manual_rows_for)
-from league_config import LEAGUES
+from league_config import LEAGUES, modelled_leagues
 
 setup_page("Football Model — Today's Picks")
 sel_date, model_only = sidebar_date()
@@ -15,7 +15,9 @@ if model_only:
     st.info(
         "**Model-only mode.** Every league and market is forecast from the "
         "Dixon-Coles model with no bookmaker comparison — so Match Result "
-        "shows no edge or traffic light here, only the model's own probability."
+        "shows no edge or traffic light here, only the model's own probability. "
+        "UEFA competitions have no model and run on bookmaker prices, so they're "
+        "hidden in this mode."
     )
 
 with st.spinner("Fitting models and fetching fixtures..."):
@@ -34,7 +36,7 @@ with st.expander("➕ Add fixtures manually"):
         "time first, e.g. `12:30 Chesterfield v Tranmere`. The model forecasts "
         "them like any other game."
     )
-    man_league = st.selectbox("League", list(LEAGUES), key="man_league")
+    man_league = st.selectbox("League", modelled_leagues(), key="man_league")
     man_text = st.text_area("Fixtures", height=150, key="man_text",
                              placeholder="12:30 Chesterfield v Tranmere\n"
                                          "Accrington v Cheltenham")
@@ -66,17 +68,25 @@ leagues = sorted(rows["league"].unique())
 
 
 def _card(r, show_edge=True):
-    metrics = [("Model %", f"{r['model_prob']*100:.1f}%")]
-    if show_edge and r["market_prob"] is not None and pd.notna(r["market_prob"]):
-        metrics.append(("Market %", f"{r['market_prob']*100:.1f}%"))
-        metrics.append(("Edge", f"{r['edge']*100:+.1f} pts"))
+    # UEFA competitions have no model: the number shown is the bookmakers'
+    # own de-vigged probability, so it's labelled as such rather than
+    # "Model %", and there's no edge to show.
+    is_market = r.get("prob_source") == "market"
+    if is_market:
+        metrics = [("Market %", f"{r['model_prob']*100:.1f}%")]
+    else:
+        metrics = [("Model %", f"{r['model_prob']*100:.1f}%")]
+        if show_edge and r["market_prob"] is not None and pd.notna(r["market_prob"]):
+            metrics.append(("Market %", f"{r['market_prob']*100:.1f}%"))
+            metrics.append(("Edge", f"{r['edge']*100:+.1f} pts"))
     if r["odds"] and pd.notna(r["odds"]):
         metrics.append(("Odds", f"{r['odds']:.2f}"))
     render_pick_card(
         TIER_ICON.get(r["tier"], "") if show_edge else None,
         r["market_label"] if show_edge else f"{r['selection']} — {r['market_label']}",
         f"{r['league']} · {r['fixture']}"
-        + (" · ⚠️ provisional rating" if r.get("seeded") else ""),
+        + (" · ⚠️ provisional rating" if r.get("seeded") else "")
+        + (" · 📊 bookmaker-implied, no model" if is_market else ""),
         metrics,
         reason=(r["reason"] or None) if show_edge else None,
         kickoff=r.get("kickoff"),
@@ -104,7 +114,8 @@ with tab_match:
         "Model probability vs de-vigged market probability. 🟢/🟡 cleared the "
         "plausibility ceiling and traffic-light bands. 🔵 needs manual "
         "checking — either a large edge, or a provisionally-seeded promoted "
-        "team. ⚪ means no meaningful edge."
+        "team. ⚪ means no meaningful edge. 📊 is a UEFA competition: the "
+        "bookmakers' own probability, with no model behind it."
     )
     mr = rows[rows["market"] == "1X2"]
 
@@ -113,8 +124,8 @@ with tab_match:
         league_filter = st.multiselect("League", leagues, default=leagues, key="mr_lg")
     with c2:
         tier_filter = st.multiselect(
-            "Show", ["green", "amber", "verify", "red", "forecast"],
-            default=["green", "amber", "verify", "forecast"], key="mr_tier",
+            "Show", ["green", "amber", "verify", "red", "forecast", "market"],
+            default=["green", "amber", "verify", "forecast", "market"], key="mr_tier",
             help="'forecast' = no market price available (League One/Two, "
                  "or model-only mode)")
 
