@@ -68,8 +68,19 @@ def main():
     used0, rem0 = quota(r)
     print(f"status {r.status_code} | quota used {used0}, remaining {rem0}\n")
     if r.status_code != 200:
-        print("Couldn't list sports:", r.text[:200])
-        sys.exit(1)
+        if r.status_code == 401:
+            print("The Odds API rejected this key (401). If it says DEACTIVATED_KEY, "
+                  "the plan was cancelled or a payment failed.\nPut the new key in "
+                  ".env (and in Streamlit Cloud -> Settings -> Secrets), then re-run.")
+        else:
+            print("Couldn't list sports:", r.text[:200])
+        print("\nSkipping the Odds API sections — section 4 below doesn't need a key.\n")
+        print("=" * 66)
+        print("4) THE FIXTURES.CSV SNAPSHOT")
+        print("=" * 66)
+        for line in summarise_snapshot("data/fixtures.csv"):
+            print(line)
+        return
 
     soccer = [s for s in r.json() if s["key"].startswith("soccer")]
     hints = ("england", "efl", "epl", "league", "national", "conference", "fa_cup")

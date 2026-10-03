@@ -35,6 +35,10 @@ def fetch_events(sport_key: str, api_key: str, timeout: int = 20):
             timeout=timeout)
     except requests.exceptions.RequestException as e:
         return None, f"events request failed ({type(e).__name__})"
+    if resp.status_code == 401:
+        return None, "Odds API key rejected (401) — check ODDS_API_KEY and billing"
+    if resp.status_code == 429:
+        return None, "Odds API quota used up (429)"
     if resp.status_code != 200:
         return None, f"Odds API {resp.status_code} for '{sport_key}'"
     try:
