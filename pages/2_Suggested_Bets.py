@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from football_core import (setup_page, sidebar_date, run_all, build_acca,
+                            manual_rows_for,
                             ENGLISH_EXCL_EPL, REST_OF_EUROPE, ACCA_MARKETS)
 
 setup_page("Football Model — Suggested Bets")
@@ -33,8 +34,17 @@ with st.spinner("Fitting models and loading fixtures..."):
 for n in notes:
     st.warning(n)
 
+# Fixtures typed in on Today's Picks count here too.
+manual_rows, _manual_notes = manual_rows_for(sel_date)
+if not manual_rows.empty:
+    rows = pd.concat([rows, manual_rows], ignore_index=True).drop_duplicates(
+        subset=["league", "fixture", "market", "selection"])
+    st.caption(f"Includes {manual_rows['fixture'].nunique()} fixture(s) added "
+               "manually on Today's Picks.")
+
 if rows.empty:
-    st.info(f"No fixtures found for {sel_date:%a %d %b}.")
+    st.info(f"No fixtures found for {sel_date:%a %d %b}. You can add them "
+            "manually on the Today's Picks page.")
     st.stop()
 
 GROUPS = [
@@ -89,7 +99,7 @@ for group_name, group_leagues in GROUPS:
                 st.markdown(f"**{r['selection']}** — {r['fixture']}")
                 c1, c2 = st.columns([1, 3])
                 c1.metric("Model %", f"{r['model_prob']*100:.1f}%")
-                sub = r["league"]
+                sub = r["league"] + (" · ⚠️ provisional rating" if r.get("seeded") else "")
                 if r.get("kickoff"):
                     sub = f"{sub} · KO {r['kickoff']}"
                 c2.caption(sub)

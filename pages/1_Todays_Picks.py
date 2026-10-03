@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
 from football_core import (setup_page, sidebar_date, run_all, render_pick_card,
-                            TIER_ICON, market_label, kickoff_sort_key)
+                            TIER_ICON, market_label, kickoff_sort_key,
+                            add_manual_fixtures, clear_manual_fixtures,
+                            manual_rows_for)
+from league_config import LEAGUES
 
 setup_page("Football Model — Today's Picks")
 sel_date, model_only = sidebar_date()
@@ -21,8 +24,40 @@ with st.spinner("Fitting models and fetching fixtures..."):
 for n in notes:
     st.warning(n)
 
+# Manual entry sits ABOVE the empty-check on purpose: it's the way out when
+# no data source has the day's games, so it has to be reachable exactly
+# when the automatic list comes back empty.
+with st.expander("➕ Add fixtures manually"):
+    st.caption(
+        "For games the app can't find — a division it doesn't list, a fixture "
+        "list that's late, or a blocked source. One per line, optional kickoff "
+        "time first, e.g. `12:30 Chesterfield v Tranmere`. The model forecasts "
+        "them like any other game."
+    )
+    man_league = st.selectbox("League", list(LEAGUES), key="man_league")
+    man_text = st.text_area("Fixtures", height=150, key="man_text",
+                             placeholder="12:30 Chesterfield v Tranmere\n"
+                                         "Accrington v Cheltenham")
+    b1, b2 = st.columns(2)
+    if b1.button("Add these fixtures"):
+        if man_text.strip():
+            add_manual_fixtures(man_league, man_text, sel_date)
+            st.rerun()
+    if b2.button("Clear added fixtures"):
+        clear_manual_fixtures(sel_date)
+        st.rerun()
+
+manual_rows, manual_notes = manual_rows_for(sel_date)
+for n in manual_notes:
+    st.warning(n)
+if not manual_rows.empty:
+    rows = pd.concat([rows, manual_rows], ignore_index=True).drop_duplicates(
+        subset=["league", "fixture", "market", "selection"])
+    st.caption(f"Includes {manual_rows['fixture'].nunique()} fixture(s) added manually.")
+
 if rows.empty:
-    st.info(f"No fixtures found for {sel_date:%a %d %b}.")
+    st.info(f"No fixtures found for {sel_date:%a %d %b}. If games are on, add "
+            "them in the box above.")
     st.stop()
 
 rows["market_label"] = [market_label(m, sel) for m, sel
@@ -40,7 +75,8 @@ def _card(r, show_edge=True):
     render_pick_card(
         TIER_ICON.get(r["tier"], "") if show_edge else None,
         r["market_label"] if show_edge else f"{r['selection']} — {r['market_label']}",
-        f"{r['league']} · {r['fixture']}",
+        f"{r['league']} · {r['fixture']}"
+        + (" · ⚠️ provisional rating" if r.get("seeded") else ""),
         metrics,
         reason=(r["reason"] or None) if show_edge else None,
         kickoff=r.get("kickoff"),

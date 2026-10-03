@@ -21,13 +21,29 @@ LEAGUES = {
         "odds_key": "soccer_efl_champ",
         "has_odds": True,
     },
+    # events_key: Odds API sport key used ONLY for the free fixture-list
+    # endpoint. League One/Two were marked has_odds=False early on because
+    # the Odds API homepage doesn't name them, but that was never actually
+    # tested. These keys are believed to exist — run check_sources.py to
+    # confirm. If they do, flipping has_odds to True (and setting odds_key)
+    # would add real bookmaker edges for both divisions.
     "League One": {
         "data_code": "E2",
         "odds_key": None,
+        "events_key": "soccer_england_league1",
         "has_odds": False,
     },
     "League Two": {
         "data_code": "E3",
+        "odds_key": None,
+        "events_key": "soccer_england_league2",
+        "has_odds": False,
+    },
+    # football-data.co.uk calls this division "Conference" (code EC).
+    # No Odds API coverage that I know of, so fixtures come from
+    # fixtures.csv or the manual-entry box on Today's Picks.
+    "National League": {
+        "data_code": "EC",
         "odds_key": None,
         "has_odds": False,
     },
@@ -97,6 +113,7 @@ TEAM_NAME_MAPS = {
     },
     "League One": {},
     "League Two": {},
+    "National League": {},
     "Bundesliga": {
         "VfB Stuttgart": "Stuttgart",
         "1. FC Köln": "FC Koln",

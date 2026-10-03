@@ -26,6 +26,7 @@ FEEDER_LEAGUE_CODE = {
     "Premier League": "E1",       # promoted from EFL Championship
     "EFL Championship": "E2",     # promoted from League One
     "League One": "E3",           # promoted from League Two
+    "League Two": "EC",           # promoted from the National League
 }
 
 SEASON = "2526"

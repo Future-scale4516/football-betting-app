@@ -151,11 +151,13 @@ def _fetch_csv(url: str) -> pd.DataFrame:
                             on_bad_lines="skip")
 
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets
-from league_config import LEAGUES, data_url, normalise_name, SEASON
+from league_config import LEAGUES, TEAM_NAME_MAPS, data_url, normalise_name, SEASON
 from plausibility import check_plausibility
 from traffic_light import classify
 from promoted_seeding import seed_missing_teams
-from env_config import require_api_key
+from env_config import require_api_key, ODDS_API_KEY as _ODDS_KEY
+from fixtures_source import fetch_events, parse_events, parse_fixture_lines
+from team_matching import match_fixture_names
 from football_data_source import load_results as _load_current_season_results
 from calibration import calibrate_markets
 
@@ -163,7 +165,7 @@ ODDS_BASE_URL = "https://api.the-odds-api.com/v4/sports/{key}/odds/"
 FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
 
 # Groups used by the Suggested Bets page
-ENGLISH_EXCL_EPL = ["EFL Championship", "League One", "League Two"]
+ENGLISH_EXCL_EPL = ["EFL Championship", "League One", "League Two", "National League"]
 REST_OF_EUROPE = ["Bundesliga", "Serie A", "La Liga", "Ligue 1"]
 
 ACCA_MARKETS = ["1X2", "BTTS", "O/U 2.5"]
@@ -437,6 +439,65 @@ def fetch_upcoming_fixtures(div_code: str, target: date):
     return out, None
 
 
+def fetch_fixtures_for_league(league, cfg, target_date, known_teams):
+    """Live fixture list first, the committed fixtures.csv snapshot second.
+    Returns (fixtures, notes).
+
+    The snapshot alone is not good enough: football-data's fixtures.csv is
+    thin and irregularly updated (a Thursday refresh held just 12 rows),
+    and the app can never see it fresher than the last refresh_data.py
+    run — so on a matchday the app could say "No fixtures found" while
+    games were on. The Odds API's events endpoint is current and works
+    from Streamlit Cloud.
+    """
+    notes = []
+    events_key = cfg.get("events_key") or cfg.get("odds_key")
+
+    if events_key and _ODDS_KEY:
+        events, err = fetch_events(events_key, _ODDS_KEY)
+        if err:
+            notes.append(f"{league}: {err} — falling back to fixtures.csv")
+        else:
+            raw = parse_events(events, target_date)
+            if raw:
+                matched, unmatched = match_fixture_names(
+                    raw, known_teams, TEAM_NAME_MAPS.get(league))
+                if unmatched:
+                    notes.append(
+                        f"{league}: no rating for {', '.join(unmatched)} — shown "
+                        "with a provisional rating (⚠️). If one is only a "
+                        "spelling variant, add it to TEAM_NAME_MAPS.")
+                return matched, notes
+            # No events that day — fall through; the CSV might still know better.
+
+    csv_fixtures, err = fetch_upcoming_fixtures(cfg["data_code"], target_date)
+    if err:
+        notes.append(f"{league}: {err}")
+    return csv_fixtures, notes
+
+
+def _forecast_fixtures(league, model, fixtures):
+    """Model-only forecast rows for a list of (home, away, kickoff, started).
+    Shared by the automatic path and the manual-entry box."""
+    missing = {t for fx in fixtures for t in (fx[0], fx[1])
+               if t not in model["attack"]}
+    if missing:
+        model = seed_missing_teams(model, league, list(missing))
+    seed_methods = model.get("seed_method", {})
+
+    rows = []
+    for home, away, kickoff, started in fixtures:
+        if home not in model["attack"] or away not in model["attack"]:
+            continue
+        grid = score_matrix(home, away, model)
+        markets = calibrate_markets(derive_markets(grid))
+        rows.extend(_evaluate(
+            f"{home} vs {away}", league, markets, {},
+            seed_methods.get(home) or seed_methods.get(away),
+            kickoff=kickoff, started=started))
+    return rows
+
+
 # ------------------------------------------------------------------- de-vig
 
 def devig(*odds):
@@ -534,7 +595,11 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
 
     def add(market, selection, model_prob, market_prob=None, odds=None):
         if market_prob is None:
-            tier, edge, reason = "forecast", None, "No odds available — model forecast only"
+            tier, edge = "forecast", None
+            # A guessed rating used to look identical to a fitted one here;
+            # the seeded check below only ever ran when odds existed.
+            reason = (f"No odds, and a provisional rating — {seeded}" if seeded
+                      else "No odds available — model forecast only")
         else:
             edge = model_prob - market_prob
             status, reason = check_plausibility(model_prob, market_prob, edge)
@@ -550,6 +615,7 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
             "market_prob": market_prob, "odds": odds, "edge": edge,
             "tier": tier, "reason": reason,
             "kickoff": kickoff, "started": started,
+            "seeded": bool(seeded),
         })
 
     m = markets["1X2"]
@@ -643,30 +709,80 @@ def run_all(target_date: date, model_only: bool = False):
                     f"{home} vs {away}", league, markets, odds_data, seeded,
                     kickoff=kickoff, started=started))
         else:
-            fixtures, err = fetch_upcoming_fixtures(cfg["data_code"], target_date)
-            if err:
-                notes.append(f"{league}: {err}")
-                continue
+            fixtures, fnotes = fetch_fixtures_for_league(
+                league, cfg, target_date, set(model["attack"]))
+            notes.extend(fnotes)
             if not fixtures:
                 continue
-
-            missing = {t for fx in fixtures for t in (fx[0], fx[1])
-                       if t not in model["attack"]}
-            if missing:
-                model = seed_missing_teams(model, league, list(missing))
-            seed_methods = model.get("seed_method", {})
-
-            for home, away, kickoff, started in fixtures:
-                if home not in model["attack"] or away not in model["attack"]:
-                    continue
-                grid = score_matrix(home, away, model)
-                markets = calibrate_markets(derive_markets(grid))
-                all_rows.extend(_evaluate(
-                    f"{home} vs {away}", league, markets, {},
-                    seed_methods.get(home) or seed_methods.get(away),
-                    kickoff=kickoff, started=started))
+            all_rows.extend(_forecast_fixtures(league, model, fixtures))
 
     return pd.DataFrame(all_rows), notes
+
+
+# ------------------------------------------------------- manual fixture entry
+#
+# A guaranteed fallback for when no data source has a game — a division the
+# app doesn't know, a fixture list that's late, or a source that's blocked.
+# Type the games in and the model forecasts them like any other.
+
+def forecast_manual_fixtures(league, text, target_date):
+    """Typed fixtures -> (rows_df, notes). Team names are matched to the
+    names the model knows; anything unmatched is kept as typed and gets a
+    provisional rating, clearly marked."""
+    pairs, bad = parse_fixture_lines(text)
+    notes = [f"Couldn't read '{b}' — use the form 'Home v Away'." for b in bad]
+    if not pairs:
+        return pd.DataFrame(), notes
+
+    try:
+        model = fit_model_for_league(league, target_date)
+    except Exception as e:
+        return pd.DataFrame(), notes + [f"{league}: couldn't fit model ({e})"]
+
+    raw = []
+    for home, away, ko in pairs:
+        kickoff, started = _fixture_kickoff(target_date, ko)
+        raw.append((home, away, kickoff, started))
+
+    matched, unmatched = match_fixture_names(
+        raw, set(model["attack"]), TEAM_NAME_MAPS.get(league))
+    if unmatched:
+        notes.append(
+            f"{league}: no rating for {', '.join(unmatched)} — given a "
+            "provisional rating (⚠️). Check the spelling if that's a "
+            "club the model should already know.")
+
+    rows = _forecast_fixtures(league, model, matched)
+    return pd.DataFrame(rows), notes
+
+
+def add_manual_fixtures(league, text, target_date):
+    st.session_state.setdefault("manual_fixtures", []).append(
+        {"league": league, "text": text, "date": target_date})
+
+
+def clear_manual_fixtures(target_date):
+    st.session_state["manual_fixtures"] = [
+        e for e in st.session_state.get("manual_fixtures", [])
+        if e["date"] != target_date]
+
+
+def manual_rows_for(target_date):
+    """Forecasts every fixture entered by hand for this date, across
+    leagues. Returns (rows_df, notes)."""
+    frames, notes = [], []
+    for entry in st.session_state.get("manual_fixtures", []):
+        if entry["date"] != target_date:
+            continue
+        df, n = forecast_manual_fixtures(entry["league"], entry["text"], target_date)
+        notes.extend(n)
+        if not df.empty:
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame(), notes
+    out = pd.concat(frames, ignore_index=True)
+    return out.drop_duplicates(
+        subset=["league", "fixture", "market", "selection"]), notes
 
 
 # ------------------------------------------------------------- acca builder
