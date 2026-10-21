@@ -170,6 +170,11 @@ REST_OF_EUROPE = ["Bundesliga", "Serie A", "La Liga", "Ligue 1"]
 
 ACCA_MARKETS = ["1X2", "BTTS", "O/U 2.5"]
 
+# Display names. The tiers measure disagreement with the market, NOT value:
+# September 2026 check (239 fixtures) found flagged edges lost ~7-8% ROI.
+TIER_NAME = {"green": "strong disagreement", "amber": "disagreement",
+             "verify": "check", "red": "in line", "forecast": "forecast",
+             "market": "market"}
 TIER_ICON = {"green": "🟢", "amber": "🟡", "verify": "🔵", "red": "⚪", "market": "📊"}
 
 

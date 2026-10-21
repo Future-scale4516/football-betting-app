@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from football_core import (setup_page, sidebar_date, run_all, render_pick_card,
-                            TIER_ICON, market_label, kickoff_sort_key,
+                            TIER_ICON, TIER_NAME, market_label, kickoff_sort_key,
                             add_manual_fixtures, clear_manual_fixtures,
                             manual_rows_for)
 from league_config import LEAGUES, modelled_leagues
@@ -111,11 +111,14 @@ tab_match, tab_btts, tab_o25, tab_o15 = st.tabs(
 # ------------------------------------------------------------- Match Result
 with tab_match:
     st.caption(
-        "Model probability vs de-vigged market probability. 🟢/🟡 cleared the "
-        "plausibility ceiling and traffic-light bands. 🔵 needs manual "
-        "checking — either a large edge, or a provisionally-seeded promoted "
-        "team. ⚪ means no meaningful edge. 📊 is a UEFA competition: the "
-        "bookmakers' own probability, with no model behind it."
+        "Model probability vs de-vigged market probability. The colours show "
+        "**where the model disagrees with the bookmakers, not where the value "
+        "is**: in a September check the flagged disagreements lost money "
+        "(about -7% ROI) and the market was the more accurate forecast. "
+        "🟢 strong disagreement · 🟡 disagreement · 🔵 check manually "
+        "(very large gap, or a provisionally-seeded team) · ⚪ in line with "
+        "the market · 📊 UEFA competition: the bookmakers' own probability, "
+        "no model behind it."
     )
     mr = rows[rows["market"] == "1X2"]
 
@@ -125,6 +128,7 @@ with tab_match:
     with c2:
         tier_filter = st.multiselect(
             "Show", ["green", "amber", "verify", "red", "forecast", "market"],
+            format_func=lambda t: f"{TIER_ICON.get(t, '')} {TIER_NAME.get(t, t)}",
             default=["green", "amber", "verify", "forecast", "market"], key="mr_tier",
             help="'forecast' = no market price available (League One/Two, "
                  "or model-only mode)")
@@ -135,7 +139,7 @@ with tab_match:
         st.info("Nothing matches those filters.")
     else:
         counts = view["tier"].value_counts()
-        st.markdown(" · ".join(f"{TIER_ICON.get(t, '')} {c} {t}"
+        st.markdown(" · ".join(f"{TIER_ICON.get(t, '')} {c} {TIER_NAME.get(t, t)}"
                                 for t, c in counts.items()))
 
         sort_choice = st.selectbox(
