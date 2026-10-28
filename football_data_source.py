@@ -17,6 +17,9 @@ rather than another cryptic parser error.
 """
 
 import io
+import time
+from pathlib import Path
+import urllib.parse
 import requests
 import pandas as pd
 
@@ -24,6 +27,12 @@ BASE = "https://www.football-data.co.uk/mmz4281/{season}/{code}.csv"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/120.0 Safari/537.36"}
+
+# Stopgap only — see _attempt() below. Not a permanent fix; replace with a
+# proper non-cloud-IP data pipeline when there's time (see the conversation
+# this was added in — Streamlit Cloud's own IP started getting blocked by
+# football-data.co.uk's anti-bot protection, unrelated to any user network).
+_PROXY_PREFIX = "https://api.allorigins.win/raw?url="
 
 REQUIRED_COLS = {"HomeTeam", "AwayTeam", "FTHG", "FTAG"}
 
@@ -45,14 +54,39 @@ def season_candidates(target_date):
 
 
 def _attempt(url):
-    """Returns (dataframe_or_None, description_of_what_happened)."""
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=25)
-    except Exception as e:
-        return None, f"request failed ({type(e).__name__})"
+    """Returns (dataframe_or_None, description_of_what_happened).
 
-    if resp.status_code != 200:
-        return None, f"HTTP {resp.status_code}"
+    Retries a couple of times on a transient 502/503/504 — football-
+    data.co.uk's own server briefly overloading isn't worth giving up on
+    immediately for. If direct requests keep failing, falls back to a
+    public proxy (a different, unrelated problem: Streamlit Cloud's own
+    IP being blocked — see the _PROXY_PREFIX note above)."""
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=25)
+        except Exception as e:
+            if attempt == 2:
+                resp = None
+                break
+            time.sleep(1.5 * (attempt + 1))
+            continue
+
+        if resp.status_code in (502, 503, 504) and attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        break
+
+    if resp is None or resp.status_code != 200:
+        direct_failure = (f"HTTP {resp.status_code}" if resp is not None
+                           else "request failed")
+        try:
+            proxied_url = _PROXY_PREFIX + urllib.parse.quote(url, safe="")
+            resp = requests.get(proxied_url, timeout=35)
+            if resp.status_code != 200:
+                return None, f"{direct_failure}; proxy also HTTP {resp.status_code}"
+        except Exception as e:
+            return None, f"{direct_failure}; proxy also failed ({type(e).__name__})"
 
     text = resp.content.decode("utf-8-sig", errors="replace")
     if not text.strip():
@@ -79,27 +113,62 @@ def _attempt(url):
     return df, f"OK ({len(df)} rows)"
 
 
-def load_results(code: str, target_date):
-    """Tries each candidate season until one yields a valid results CSV.
+DATA_DIR = Path(__file__).parent / "data"
 
-    Returns (dataframe_or_None, list_of_attempt_descriptions). The
-    attempt log is surfaced in the UI so a failure is diagnosable
-    instead of mysterious.
+
+def _snapshot_df(season, code):
+    """The committed data/ copy (see refresh_data.py), or None."""
+    path = DATA_DIR / f"{season}_{code}.csv"
+    if not path.exists():
+        return None
+    try:
+        return pd.read_csv(path, encoding="utf-8-sig")
+    except Exception:
+        return None
+
+
+def _with_dates(df):
+    df["_date"] = pd.to_datetime(df["Date"], dayfirst=True,
+                                  errors="coerce").dt.date
+    return df
+
+
+def _newest(df):
+    d = df["_date"].dropna()
+    return f"{d.max():%d %b}" if len(d) else "unknown"
+
+
+def load_results(code: str, target_date):
+    """Tries each candidate season until one yields a file containing the
+    target date. For each season: the committed snapshot first (the live
+    site blocks Streamlit Cloud, and the public proxy fallback can serve an
+    old cached copy), then the live fetch.
+
+    Returns (dataframe_or_None, list_of_attempt_descriptions). The log is
+    shown in the UI, including how recent each file's newest result is, so
+    "not published yet" and "stale copy" are distinguishable.
     """
     log = []
     for season in season_candidates(target_date):
+        snap = _snapshot_df(season, code)
+        if snap is not None and not (REQUIRED_COLS - set(snap.columns)):
+            snap = _with_dates(snap)
+            if (snap["_date"] == target_date).any():
+                log.append(f"{season}/{code}.csv → snapshot OK "
+                           f"({len(snap)} rows, newest result {_newest(snap)})")
+                return snap, log
+            log.append(f"{season}/{code}.csv → snapshot has no games on "
+                       f"{target_date} (newest result {_newest(snap)})")
+
         url = BASE.format(season=season, code=code)
         df, what = _attempt(url)
-        log.append(f"{season}/{code}.csv → {what}")
+        log.append(f"{season}/{code}.csv → live: {what}")
         if df is not None:
-            df["_date"] = pd.to_datetime(df["Date"], dayfirst=True,
-                                          errors="coerce").dt.date
-            # Only accept a season that actually contains the target date;
-            # otherwise keep trying, since an old season file will parse
-            # fine but contain nothing useful.
+            df = _with_dates(df)
             if (df["_date"] == target_date).any():
                 return df, log
-            log.append(f"   (parsed, but has no fixtures on {target_date})")
+            log.append(f"   (live copy has no games on {target_date}; its "
+                       f"newest result is {_newest(df)})")
     return None, log
 
 
