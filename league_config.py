@@ -68,33 +68,54 @@ LEAGUES = {
         "has_odds": True,
     },
 
-    # ---- MARKET-ONLY competitions -------------------------------------
-    # Fixtures and bookmaker prices only — there is NO model behind these.
-    # data_code is None because there is no results history to fit on:
-    # football-data.co.uk doesn't carry UEFA competition results, each club
-    # plays only ~8 league-phase games, and Dixon-Coles ratings are relative
-    # to a league's own average so can't be compared across leagues. A proper
-    # model needs cross-league strength ratings (e.g. club Elo) — a separate
-    # piece of work. Until then these show the market's own probabilities,
-    # clearly labelled, rather than a model that can't price them.
+    # ---- CROSS-LEAGUE competitions ------------------------------------
+    # No results history to fit Dixon-Coles on (football-data.co.uk carries
+    # no UEFA/FA Cup files, and domestic ratings can't be compared across
+    # leagues), so data_code is None and these are not gradable on the
+    # Results page. Instead:
+    #   - elo_model=True: probabilities come from ClubElo ratings
+    #     (club_ratings.py, data/clubelo.csv via refresh_data.py). NOT
+    #     backtested — always shown as "check", never green/amber.
+    #   - any club without a rating falls back to the bookmakers' own
+    #     de-vigged prices (the original market-only behaviour).
+    # avg_goals = rough typical total goals per game for the competition.
     "UEFA Champions League": {
         "data_code": None,
         "odds_key": "soccer_uefa_champs_league",
         "has_odds": True,
         "market_only": True,
+        "elo_model": True,
+        "avg_goals": 2.8,
     },
     "UEFA Europa League": {
         "data_code": None,
         "odds_key": "soccer_uefa_europa_league",
         "has_odds": True,
         "market_only": True,
+        "elo_model": True,
+        "avg_goals": 2.75,
     },
     "UEFA Conference League": {
         "data_code": None,
         "odds_key": "soccer_uefa_europa_conference_league",
         "has_odds": True,
         "market_only": True,
+        "elo_model": True,
+        "avg_goals": 2.75,
     },
+    # Odds API key believed to be soccer_fa_cup — run check_sources.py to
+    # confirm it is listed for your key. If it isn't, the app just shows
+    # nothing for this competition.
+    "FA Cup": {
+        "data_code": None,
+        "odds_key": "soccer_fa_cup",
+        "events_key": "soccer_fa_cup",
+        "has_odds": True,
+        "market_only": True,
+        "elo_model": True,
+        "avg_goals": 2.8,
+    },
+    # National teams: ClubElo is clubs only, so prices only.
     "UEFA Nations League": {
         "data_code": None,
         "odds_key": "soccer_uefa_nations_league",

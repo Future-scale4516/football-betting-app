@@ -130,6 +130,37 @@ def main():
     except Exception as e:
         print(f"  ✗ fixtures: {type(e).__name__}")
 
+    print("\nClub ratings (ClubElo, for UEFA competitions and the FA Cup):")
+    saved["elo"] = False
+    from datetime import timedelta
+    attempts = [(d, scheme) for d in (0, 1, 2) for scheme in ("http", "https")]
+    for back, scheme in attempts:
+        day = (date.today() - timedelta(days=back)).isoformat()
+        url = f"{scheme}://api.clubelo.com/{day}"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=30)
+        except Exception as e:
+            print(f"  … {url}: {type(e).__name__}")
+            continue
+        if resp.status_code != 200:
+            print(f"  … {url}: HTTP {resp.status_code}")
+            continue
+        try:
+            elo_df = pd.read_csv(io.StringIO(resp.content.decode("utf-8-sig")))
+        except Exception as e:
+            print(f"  … {url}: unreadable ({type(e).__name__})")
+            continue
+        if {"Club", "Elo"} <= set(elo_df.columns) and len(elo_df) > 200:
+            (DATA_DIR / "clubelo.csv").write_text(
+                resp.content.decode("utf-8-sig"), encoding="utf-8")
+            saved["elo"] = True
+            print(f"  ✓ clubelo: {len(elo_df)} clubs (ratings for {day})")
+            break
+        print(f"  … {url}: unexpected format {list(elo_df.columns)[:5]}")
+    if not saved["elo"]:
+        print("  ✗ clubelo: all attempts failed — UEFA/FA Cup games will show "
+              "bookmaker prices only until this works")
+
     manifest = {
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
         "previous_season": SEASON,
@@ -137,6 +168,7 @@ def main():
         "leagues_previous": saved["previous"],
         "leagues_current": saved["current"],
         "fixtures": saved["fixtures"],
+        "clubelo": saved["elo"],
     }
     (DATA_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2))
 

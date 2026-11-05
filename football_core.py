@@ -160,6 +160,8 @@ from fixtures_source import fetch_events, parse_events, parse_fixture_lines
 from team_matching import match_fixture_names
 from football_data_source import load_results as _load_current_season_results
 from calibration import calibrate_markets
+from shot_goals import build_fit_rows
+from club_ratings import load_elo, find_elo, score_grid as elo_score_grid, snapshot_date as elo_snapshot_date
 
 ODDS_BASE_URL = "https://api.the-odds-api.com/v4/sports/{key}/odds/"
 FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
@@ -551,47 +553,23 @@ def fit_model_for_league(league_name: str, as_of_date: date = None):
     if df is None:
         df = _fetch_csv(data_url(league_name))
 
-    keep = ["HomeTeam", "AwayTeam", "FTHG", "FTAG"]
-    has_dates = "Date" in df.columns
-    if has_dates:
-        df = df[keep + ["Date"]].dropna(subset=keep)
-        df["_date"] = pd.to_datetime(df["Date"], dayfirst=True,
-                                      errors="coerce").dt.date
-    else:
-        df = df[keep].dropna()
-
-    def _rows_with_age(frame):
-        """Each fixture carries how many days before reference_date it was
-        played, so fit_league can weight recent form more heavily. Without
-        this, a match from last autumn counts as much as one from last
-        week — which matters a lot now that last season and this season
-        are blended into one fit."""
-        out = []
-        for r in frame.itertuples(index=False):
-            played = getattr(r, "_date", None)
-            days = ((reference_date - played).days
-                    if played is not None and not pd.isna(played) else 365)
-            out.append((r.HomeTeam, r.AwayTeam, r.FTHG, r.FTAG, max(days, 0)))
-        return out
-
-    if has_dates:
-        fixtures = _rows_with_age(df)
-    else:
-        # No dates available — treat the whole (previous) season as a year old
-        fixtures = [(r.HomeTeam, r.AwayTeam, r.FTHG, r.FTAG, 365)
-                    for r in df.itertuples(index=False)]
-
+    frames = [df]
     if as_of_date is not None:
         current = _read_current_season_snapshot(cfg["data_code"], as_of_date)
         if current is None:
             current, _ = _load_current_season_results(cfg["data_code"], as_of_date)
         if current is not None:
-            prior = current[(current["_date"] < as_of_date)
-                             & current["FTHG"].notna() & current["FTAG"].notna()]
-            fixtures += _rows_with_age(prior)
+            frames.append(current[(current["_date"] < as_of_date)
+                                  & current["FTHG"].notna() & current["FTAG"].notna()])
+
+    # Rows carry age (time-decay) and shot-implied goals — see shot_goals.py.
+    fixtures = build_fit_rows(frames, reference_date)
 
     teams = sorted({t for fx in fixtures for t in (fx[0], fx[1])})
     return fit_league(fixtures, teams)
+
+
+ELO_FLAG = "Club-Elo model, not backtested"
 
 
 def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started=False):
@@ -603,14 +581,18 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
             tier, edge = "forecast", None
             # A guessed rating used to look identical to a fitted one here;
             # the seeded check below only ever ran when odds existed.
-            reason = (f"No odds, and a provisional rating — {seeded}" if seeded
-                      else "No odds available — model forecast only")
+            if seeded == ELO_FLAG:
+                reason = f"{ELO_FLAG} — no bookmaker price for this market"
+            else:
+                reason = (f"No odds, and a provisional rating — {seeded}" if seeded
+                          else "No odds available — model forecast only")
         else:
             edge = model_prob - market_prob
             status, reason = check_plausibility(model_prob, market_prob, edge)
             if seeded:
                 tier = "verify"
-                reason = f"Provisionally-seeded team — {seeded}"
+                reason = (f"{ELO_FLAG} — compare with the bookmaker price" if seeded == ELO_FLAG
+                          else f"Provisionally-seeded team — {seeded}")
             else:
                 band = "O/U 2.5" if market.startswith("O/U") else market
                 tier = classify(band, edge) if status == "ok" else "verify"
@@ -785,6 +767,8 @@ def _market_only_league(league, cfg, target_date):
         return [], [f"{league}: {err}"]
 
     rows = []
+    elo_map = load_elo(target_date) if cfg.get("elo_model") else None
+    unmatched = set()
     for e in events:
         if _event_date(e) != target_date:
             continue
@@ -794,9 +778,28 @@ def _market_only_league(league, cfg, target_date):
         for line in (1.5, 2.5):
             odds_data[f"totals_{line}"] = _avg_market(
                 e, "totals", {"Over": "over", "Under": "under"}, line=line)
-        rows.extend(_market_rows(
-            f"{e['home_team']} vs {e['away_team']}", league, odds_data,
-            kickoff, started))
+        fixture = f"{e['home_team']} vs {e['away_team']}"
+
+        if elo_map:
+            elo_h, _ = find_elo(e["home_team"], elo_map)
+            elo_a, _ = find_elo(e["away_team"], elo_map)
+            if elo_h is not None and elo_a is not None:
+                grid = elo_score_grid(elo_h, elo_a, cfg.get("avg_goals", 2.8))
+                markets = calibrate_markets(derive_markets(grid))
+                rows.extend(_evaluate(fixture, league, markets, odds_data,
+                                      ELO_FLAG, kickoff=kickoff, started=started))
+                continue
+            unmatched.update(n for n, v in ((e["home_team"], elo_h),
+                                            (e["away_team"], elo_a)) if v is None)
+        rows.extend(_market_rows(fixture, league, odds_data, kickoff, started))
+
+    if cfg.get("elo_model"):
+        if not elo_map and rows:
+            notes.append(f"{league}: no club-rating snapshot (data/clubelo.csv) — "
+                         "showing bookmaker prices only. Run refresh_data.py and push.")
+        if unmatched:
+            notes.append(f"{league}: no rating found for {', '.join(sorted(unmatched))} — "
+                         "those games show bookmaker prices only.")
     return rows, notes
 
 
