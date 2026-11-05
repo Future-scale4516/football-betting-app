@@ -248,3 +248,42 @@ def score_grid(elo_home, elo_away, avg_goals, home_adv=HOME_ADV, rho=DEFAULT_RHO
             hi = mid
     s = (lo + hi) / 2
     return _grid((total_goals + s) / 2, (total_goals - s) / 2, rho)
+
+
+# ------------------------------------------------ market-implied goal grid
+#
+# When there are no club ratings (or a club isn't in them), the bookmakers'
+# own prices still say a lot: 1X2 + Over/Under 2.5 fix both teams' expected
+# goals. Solving for the two Poisson rates that reproduce those prices gives
+# a scoreline grid, and BTTS (which the bulk odds feed doesn't price) falls
+# out of it. This is NOT a model — it simply restates what the market's
+# priced markets imply, so it carries no edge by construction.
+
+def implied_grid(p_home, p_draw, p_over25, rho=DEFAULT_RHO, tol=0.02):
+    """Scoreline grid reproducing de-vigged 1X2 and Over 2.5 probabilities,
+    or None if no pair of goal rates fits them within `tol`."""
+    from scipy.optimize import least_squares
+
+    goals = np.add.outer(np.arange(MAX_GOALS + 1), np.arange(MAX_GOALS + 1))
+
+    def probs(x):
+        g = _grid(x[0], x[1], rho)
+        return np.array([np.tril(g, -1).sum(), np.trace(g), g[goals > 2.5].sum()])
+
+    target = np.array([p_home, p_draw, p_over25])
+    best = None
+    for start in ((1.4, 1.1), (2.0, 0.7), (0.8, 1.8)):
+        r = least_squares(lambda x: probs(x) - target, start, bounds=(0.05, 6.0))
+        if best is None or r.cost < best.cost:
+            best = r
+    if best is None or np.max(np.abs(probs(best.x) - target)) > tol:
+        return None
+    return _grid(best.x[0], best.x[1], rho)
+
+
+def implied_btts(p_home, p_draw, p_over25):
+    """P(both teams score) implied by the 1X2 and Over 2.5 prices, or None."""
+    g = implied_grid(p_home, p_draw, p_over25)
+    if g is None:
+        return None
+    return float(1 - g[0, :].sum() - g[:, 0].sum() + g[0, 0])

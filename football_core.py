@@ -161,7 +161,7 @@ from team_matching import match_fixture_names
 from football_data_source import load_results as _load_current_season_results
 from calibration import calibrate_markets
 from shot_goals import build_fit_rows
-from club_ratings import load_elo, find_elo, score_grid as elo_score_grid, snapshot_date as elo_snapshot_date
+from club_ratings import load_elo, find_elo, implied_btts, score_grid as elo_score_grid, snapshot_date as elo_snapshot_date
 
 ODDS_BASE_URL = "https://api.the-odds-api.com/v4/sports/{key}/odds/"
 FIXTURES_URL = "https://www.football-data.co.uk/fixtures.csv"
@@ -748,6 +748,18 @@ def _market_rows(fixture, league, odds_data, kickoff, started):
             p = devig(t["over"], t["under"])
             add(f"O/U {line}", f"Over {line}", p[0], t["over"])
             add(f"O/U {line}", f"Under {line}", p[1], t["under"])
+
+    # BTTS has no price on the bulk feed, but 1X2 + Over/Under 2.5 imply one.
+    t25 = odds_data.get("totals_2.5")
+    if h2h and t25:
+        ph = devig(h2h["home"], h2h["draw"], h2h["away"])
+        po = devig(t25["over"], t25["under"])
+        b = implied_btts(ph[0], ph[1], po[0])
+        if b is not None:
+            for sel, prob in (("Yes", b), ("No", 1 - b)):
+                add("BTTS", sel, prob, None)
+                rows[-1]["reason"] = ("Implied from the bookmakers' 1X2 and Over/Under "
+                                      "2.5 prices — there is no BTTS price, and no model")
     return rows
 
 
