@@ -80,7 +80,9 @@ def _card(r, show_edge=True):
             metrics.append(("Market %", f"{r['market_prob']*100:.1f}%"))
             metrics.append(("Edge", f"{r['edge']*100:+.1f} pts"))
     if r["odds"] and pd.notna(r["odds"]):
-        metrics.append(("Odds", f"{r['odds']:.2f}"))
+        book = r.get("book")
+        label = f"{r['odds']:.2f}" + (f" @ {book}" if isinstance(book, str) and book else "")
+        metrics.append(("Best odds", label))
     render_pick_card(
         TIER_ICON.get(r["tier"], "") if show_edge else None,
         r["market_label"] if show_edge else f"{r['selection']} — {r['market_label']}",

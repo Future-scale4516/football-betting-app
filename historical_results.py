@@ -6,14 +6,16 @@ result. No pre-logged picks required.
 Mirrors the MLB app's Results page: pick a date, click Load, done.
 """
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets
-from league_config import LEAGUES, data_url
-from auto_settle import grade, find_closing_odds
+from league_config import LEAGUES, SEASON, data_url
+from auto_settle import grade, find_closing_odds, closing_fair_prob
 from calibration import calibrate_markets
-from football_data_source import load_results, _attempt, BASE
+from football_data_source import load_results, _attempt, _snapshot_df, BASE
+from shot_goals import build_fit_rows
 
 MARKET_SELECTIONS = {
     "1X2": [("Home", "home"), ("Draw", "draw"), ("Away", "away")],
@@ -29,27 +31,24 @@ def _load_season_for(league_name: str, target_date):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _load_last_season_fixtures(league_name: str):
+def _load_last_season_frame(league_name: str):
+    """Last season's results (committed snapshot first), or None."""
+    cfg = LEAGUES[league_name]
+    snap = _snapshot_df(SEASON, cfg["data_code"])
+    if snap is not None:
+        return snap
     df, _ = _attempt(data_url(league_name))
-    if df is None:
-        return []
-    df = df[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]].dropna()
-    return list(df.itertuples(index=False, name=None))
+    return df
 
 
 def _fit_as_of(league_name: str, target_date, results_df):
     """Last season in full + this season's completed games strictly before
-    target_date, so there's no lookahead into the day being graded."""
-    base = _load_last_season_fixtures(league_name)
-
+    target_date, so there's no lookahead into the day being graded. Uses the
+    same row builder as the live app (time-decay + shot-implied goals)."""
+    base = _load_last_season_frame(league_name)
     prior = results_df[(results_df["_date"] < target_date)
-                        & results_df["FTHG"].notna()
-                        & results_df["FTAG"].notna()]
-    prior_fixtures = list(
-        prior[["HomeTeam", "AwayTeam", "FTHG", "FTAG"]]
-        .itertuples(index=False, name=None))
-
-    fixtures = base + prior_fixtures
+                       & results_df["FTHG"].notna() & results_df["FTAG"].notna()]
+    fixtures = build_fit_rows([base, prior], target_date)
     teams = sorted({t for fx in fixtures for t in (fx[0], fx[1])})
     if len(teams) < 4 or len(fixtures) < 20:
         return None, "not enough prior data to fit a model yet"
@@ -104,6 +103,20 @@ def build_historical_results(target_date, leagues,
             mkts = calibrate_markets(derive_markets(grid))
             hg, ag = int(g["FTHG"]), int(g["FTAG"])
 
+            # Game-level prediction, repeated on each row so the Results page
+            # can show "what the model thought of this game" (MLB-style).
+            goals = np.arange(grid.shape[0])
+            ml_h, ml_a = np.unravel_index(grid.argmax(), grid.shape)
+            game = {
+                "xg_home": float((grid.sum(axis=1) * goals).sum()),
+                "xg_away": float((grid.sum(axis=0) * goals).sum()),
+                "likely_score": f"{ml_h}-{ml_a}",
+                "p_home": mkts["1X2"]["home"], "p_draw": mkts["1X2"]["draw"],
+                "p_away": mkts["1X2"]["away"],
+                "p_btts": mkts["BTTS"]["yes"], "p_over25": mkts["O/U 2.5"]["over"],
+                "home_goals": hg, "away_goals": ag,
+            }
+
             for market in markets:
                 mk_probs = mkts[market]
                 options = MARKET_SELECTIONS[market]
@@ -111,6 +124,7 @@ def build_historical_results(target_date, leagues,
                           if pick_mode == "most_likely" else options)
 
                 for label, key in chosen:
+                    cfp, csrc = closing_fair_prob(g, market, label)
                     rows.append({
                         "league": league, "fixture": f"{home} vs {away}",
                         "market": market, "selection": label,
@@ -118,6 +132,8 @@ def build_historical_results(target_date, leagues,
                         "actual_score": f"{hg}-{ag}",
                         "won": grade(market, label, hg, ag),
                         "closing_odds": find_closing_odds(g, market, label),
+                        "closing_fair_prob": cfp, "closing_source": csrc,
+                        **game,
                     })
 
     return pd.DataFrame(rows), notes, diagnostics

@@ -19,7 +19,8 @@ import pandas as pd
 
 LOG = Path(__file__).parent / "data" / "odds_log.csv"
 COLS = ["logged_at", "match_date", "league", "fixture", "market",
-        "selection", "logged_odds", "market_prob", "model_prob", "kickoff"]
+        "selection", "logged_odds", "market_prob", "model_prob", "kickoff",
+        "benchmark", "book"]
 
 
 def collect(run_all, days):
@@ -34,7 +35,8 @@ def collect(run_all, days):
         for x in r.itertuples():
             out.append([now, d.isoformat(), x.league, x.fixture, x.market,
                         x.selection, x.odds, x.market_prob, x.model_prob,
-                        str(x.kickoff) if x.kickoff is not None else ""])
+                        str(x.kickoff) if x.kickoff is not None else "",
+                        getattr(x, "benchmark", None), getattr(x, "book", None)])
     return pd.DataFrame(out, columns=COLS)
 
 

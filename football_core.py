@@ -152,6 +152,7 @@ def _fetch_csv(url: str) -> pd.DataFrame:
 
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets
 from league_config import LEAGUES, TEAM_NAME_MAPS, data_url, normalise_name, SEASON
+from devig import devig
 from plausibility import check_plausibility
 from traffic_light import classify
 from promoted_seeding import seed_missing_teams
@@ -364,7 +365,7 @@ def fetch_odds(sport_key: str):
     # NOTE: "btts" is NOT valid on this bulk endpoint — the Odds API only
     # serves Both Teams To Score via /events/{id}/odds, which costs one call
     # per fixture. So BTTS below is model-only (no market price, no edge).
-    params = {"apiKey": require_api_key(), "regions": "uk",
+    params = {"apiKey": require_api_key(), "regions": ODDS_REGIONS,
               "markets": "h2h,totals", "oddsFormat": "decimal"}
     try:
         resp = requests.get(url, params=params, timeout=20)
@@ -507,16 +508,36 @@ def _forecast_fixtures(league, model, fixtures):
 
 # ------------------------------------------------------------------- de-vig
 
-def devig(*odds):
-    imps = [1 / o for o in odds]
-    total = sum(imps)
-    return [i / total for i in imps]
+# The benchmark for "what is the true probability" is ONE sharp book, de-vigged
+# with Shin's method — not an average of soft books, and not multiplicative
+# scaling (see devig.py). Bookmaker "pinnacle" sits in the Odds API's eu region,
+# so ODDS_REGIONS asks for both. Each region you add multiplies the credits per
+# call; set ODDS_REGIONS = "uk" to go back (the app then falls back to the
+# average of the UK books).
+ODDS_REGIONS = "uk,eu"
+SHARP_BOOK = "pinnacle"
+# Books you can actually bet at from the UK; the displayed price is the best of
+# these. Edit freely: a book missing here just isn't shopped, it never breaks.
+BETTABLE_BOOKS = {
+    "bet365", "williamhill", "ladbrokes_uk", "coral", "paddypower", "skybet",
+    "betvictor", "betfair_sb_uk", "betfair_ex_uk", "unibet_uk", "boylesports",
+    "betway", "sport888", "virginbet", "livescorebet_uk", "leovegas", "grosvenor",
+    "matchbook", "smarkets", "casumo", "betuk", "spreadex", "10bet", "ladbrokes",
+}
 
 
-def _avg_market(event, market_key, name_map, line=None):
-    """Averages odds across every bookmaker quoting this market."""
-    buckets = {k: [] for k in name_map.values()}
+def _quote(event, market_key, name_map, line=None):
+    """One market's prices from every book, reduced to what the app needs.
+
+    Returns None unless the market is priced, else a dict with
+      outcome -> best price at a UK book, "_book" (who offers it),
+      "_fair" (de-vigged probabilities in name_map order),
+      "_bench" ("pinnacle" or "average of UK books").
+    """
+    order = list(name_map.values())
+    books = {}                                   # book key -> {outcome: price}
     for bk in event.get("bookmakers", []):
+        got = {}
         for mkt in bk.get("markets", []):
             if mkt["key"] != market_key:
                 continue
@@ -525,10 +546,40 @@ def _avg_market(event, market_key, name_map, line=None):
                     continue
                 key = name_map.get(o["name"])
                 if key:
-                    buckets[key].append(o["price"])
-    if not all(buckets.values()):
+                    got[key] = o["price"]
+        if all(k in got for k in order):
+            books[bk["key"]] = got
+    if not books:
         return None
-    return {k: sum(v) / len(v) for k, v in buckets.items()}
+
+    bettable = {k: v for k, v in books.items() if k in BETTABLE_BOOKS and k != SHARP_BOOK}
+    if not bettable:                              # whitelist missed everything
+        bettable = {k: v for k, v in books.items() if k != SHARP_BOOK}
+    only_sharp = not bettable                     # nobody else prices it
+    if only_sharp:
+        bettable = {f"{k} (benchmark only)": v for k, v in books.items()}
+
+    if SHARP_BOOK in books:
+        fair = devig(*[books[SHARP_BOOK][k] for k in order])
+        bench = "pinnacle"
+    else:
+        per_book = [devig(*[v[k] for k in order]) for v in bettable.values()]
+        fair = [sum(p[i] for p in per_book) / len(per_book) for i in range(len(order))]
+        bench = "average of UK books"
+
+    out, who = {}, {}
+    for k in order:
+        book, price = max(((b, v[k]) for b, v in bettable.items()), key=lambda x: x[1])
+        out[k], who[k] = price, book
+    out["_book"], out["_fair"], out["_bench"] = who, fair, bench
+    return out
+
+
+def _sel_key(market, selection):
+    """Row selection label -> the key used inside a _quote() dict."""
+    if market == "1X2":
+        return {"Home": "home", "Draw": "draw", "Away": "away"}.get(selection)
+    return "over" if selection.startswith("Over") else "under"
 
 
 # ------------------------------------------------------------------ pipeline
@@ -576,7 +627,7 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
     """Turns one fixture's model output + market odds into pick rows."""
     rows = []
 
-    def add(market, selection, model_prob, market_prob=None, odds=None):
+    def add(market, selection, model_prob, market_prob=None, odds=None, q=None):
         if market_prob is None:
             tier, edge = "forecast", None
             # A guessed rating used to look identical to a fitted one here;
@@ -603,15 +654,17 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
             "tier": tier, "reason": reason,
             "kickoff": kickoff, "started": started,
             "seeded": bool(seeded), "prob_source": "model",
+            "benchmark": q["_bench"] if q else None,
+            "book": q["_book"].get(_sel_key(market, selection)) if q else None,
         })
 
     m = markets["1X2"]
     h2h = odds_data.get("h2h")
     if h2h:
-        p = devig(h2h["home"], h2h["draw"], h2h["away"])
-        add("1X2", "Home", m["home"], p[0], h2h["home"])
-        add("1X2", "Draw", m["draw"], p[1], h2h["draw"])
-        add("1X2", "Away", m["away"], p[2], h2h["away"])
+        p = h2h["_fair"]
+        add("1X2", "Home", m["home"], p[0], h2h["home"], h2h)
+        add("1X2", "Draw", m["draw"], p[1], h2h["draw"], h2h)
+        add("1X2", "Away", m["away"], p[2], h2h["away"], h2h)
     else:
         add("1X2", "Home", m["home"])
         add("1X2", "Draw", m["draw"])
@@ -622,9 +675,9 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
         ou = markets[key]
         odds = odds_data.get(f"totals_{line}")
         if odds:
-            p = devig(odds["over"], odds["under"])
-            add(key, f"Over {line}", ou["over"], p[0], odds["over"])
-            add(key, f"Under {line}", ou["under"], p[1], odds["under"])
+            p = odds["_fair"]
+            add(key, f"Over {line}", ou["over"], p[0], odds["over"], odds)
+            add(key, f"Under {line}", ou["under"], p[1], odds["under"], odds)
         else:
             add(key, f"Over {line}", ou["over"])
             add(key, f"Under {line}", ou["under"])
@@ -693,11 +746,11 @@ def run_all(target_date: date, model_only: bool = False):
                 markets = calibrate_markets(derive_markets(grid))
 
                 odds_data = {
-                    "h2h": _avg_market(e, "h2h", {
+                    "h2h": _quote(e, "h2h", {
                         e["home_team"]: "home", "Draw": "draw", e["away_team"]: "away"}),
                 }
                 for line in (1.5, 2.5):
-                    odds_data[f"totals_{line}"] = _avg_market(
+                    odds_data[f"totals_{line}"] = _quote(
                         e, "totals", {"Over": "over", "Under": "under"}, line=line)
 
                 all_rows.extend(_evaluate(
@@ -724,7 +777,7 @@ def run_all(target_date: date, model_only: bool = False):
 def _market_rows(fixture, league, odds_data, kickoff, started):
     rows = []
 
-    def add(market, selection, prob, odds):
+    def add(market, selection, prob, odds, q=None):
         rows.append({
             "league": league, "fixture": fixture, "market": market,
             "selection": selection,
@@ -734,26 +787,27 @@ def _market_rows(fixture, league, odds_data, kickoff, started):
             "reason": "Bookmaker-implied probability — no model for this competition",
             "kickoff": kickoff, "started": started,
             "seeded": False, "prob_source": "market",
+            "benchmark": q["_bench"] if q else None,
+            "book": q["_book"].get(_sel_key(market, selection)) if q and odds else None,
         })
 
     h2h = odds_data.get("h2h")
     if h2h:
-        p = devig(h2h["home"], h2h["draw"], h2h["away"])
-        add("1X2", "Home", p[0], h2h["home"])
-        add("1X2", "Draw", p[1], h2h["draw"])
-        add("1X2", "Away", p[2], h2h["away"])
+        p = h2h["_fair"]
+        add("1X2", "Home", p[0], h2h["home"], h2h)
+        add("1X2", "Draw", p[1], h2h["draw"], h2h)
+        add("1X2", "Away", p[2], h2h["away"], h2h)
     for line in (1.5, 2.5):
         t = odds_data.get(f"totals_{line}")
         if t:
-            p = devig(t["over"], t["under"])
-            add(f"O/U {line}", f"Over {line}", p[0], t["over"])
-            add(f"O/U {line}", f"Under {line}", p[1], t["under"])
+            p = t["_fair"]
+            add(f"O/U {line}", f"Over {line}", p[0], t["over"], t)
+            add(f"O/U {line}", f"Under {line}", p[1], t["under"], t)
 
     # BTTS has no price on the bulk feed, but 1X2 + Over/Under 2.5 imply one.
     t25 = odds_data.get("totals_2.5")
     if h2h and t25:
-        ph = devig(h2h["home"], h2h["draw"], h2h["away"])
-        po = devig(t25["over"], t25["under"])
+        ph, po = h2h["_fair"], t25["_fair"]
         b = implied_btts(ph[0], ph[1], po[0])
         if b is not None:
             for sel, prob in (("Yes", b), ("No", 1 - b)):
@@ -785,10 +839,10 @@ def _market_only_league(league, cfg, target_date):
         if _event_date(e) != target_date:
             continue
         kickoff, started = _event_kickoff(e)
-        odds_data = {"h2h": _avg_market(e, "h2h", {
+        odds_data = {"h2h": _quote(e, "h2h", {
             e["home_team"]: "home", "Draw": "draw", e["away_team"]: "away"})}
         for line in (1.5, 2.5):
-            odds_data[f"totals_{line}"] = _avg_market(
+            odds_data[f"totals_{line}"] = _quote(
                 e, "totals", {"Over": "over", "Under": "under"}, line=line)
         fixture = f"{e['home_team']} vs {e['away_team']}"
 

@@ -29,12 +29,29 @@ RESULTS_URL = "https://www.football-data.co.uk/mmz4281/{season}/{code}.csv"
 
 # Closing-odds columns, best first. football-data's naming varies by file,
 # so each is tried in turn and skipped if absent rather than assumed.
+# Pinnacle's closing price (PSC*/PC*) is the sharpest number published, so it
+# is tried first; the average close is the fallback.
 CLOSING_COLS = {
-    ("1X2", "Home"):      ["AvgCH", "B365CH", "AvgH", "B365H"],
-    ("1X2", "Draw"):      ["AvgCD", "B365CD", "AvgD", "B365D"],
-    ("1X2", "Away"):      ["AvgCA", "B365CA", "AvgA", "B365A"],
-    ("O/U 2.5", "Over"):  ["AvgC>2.5", "B365C>2.5", "Avg>2.5", "B365>2.5"],
-    ("O/U 2.5", "Under"): ["AvgC<2.5", "B365C<2.5", "Avg<2.5", "B365<2.5"],
+    ("1X2", "Home"):      ["PSCH", "AvgCH", "B365CH", "AvgH", "B365H"],
+    ("1X2", "Draw"):      ["PSCD", "AvgCD", "B365CD", "AvgD", "B365D"],
+    ("1X2", "Away"):      ["PSCA", "AvgCA", "B365CA", "AvgA", "B365A"],
+    ("O/U 2.5", "Over"):  ["PC>2.5", "PSC>2.5", "AvgC>2.5", "B365C>2.5", "Avg>2.5", "B365>2.5"],
+    ("O/U 2.5", "Under"): ["PC<2.5", "PSC<2.5", "AvgC<2.5", "B365C<2.5", "Avg<2.5", "B365<2.5"],
+}
+
+# Complete sets of closing prices for one market, sharpest first, in the order
+# the outcomes are de-vigged. (Last two entries are NOT closing prices; they are
+# only used if nothing else exists, and the source is reported.)
+CLOSING_SETS = {
+    "1X2": {"Home": 0, "Draw": 1, "Away": 2,
+            "sets": [("Pinnacle", ["PSCH", "PSCD", "PSCA"]),
+                     ("average", ["AvgCH", "AvgCD", "AvgCA"]),
+                     ("Bet365", ["B365CH", "B365CD", "B365CA"])]},
+    "O/U 2.5": {"Over": 0, "Under": 1,
+                "sets": [("Pinnacle", ["PC>2.5", "PC<2.5"]),
+                         ("Pinnacle", ["PSC>2.5", "PSC<2.5"]),
+                         ("average", ["AvgC>2.5", "AvgC<2.5"]),
+                         ("Bet365", ["B365C>2.5", "B365C<2.5"])]},
 }
 
 
@@ -98,6 +115,26 @@ def find_closing_odds(row, market: str, selection: str):
             except (TypeError, ValueError):
                 continue
     return None
+
+
+def closing_fair_prob(row, market: str, selection: str):
+    """De-vigged (Shin) closing probability of this selection, and which book
+    it came from. (None, None) when the market has no complete closing set."""
+    from devig import devig
+    spec = CLOSING_SETS.get(market)
+    if not spec:
+        return None, None
+    side = selection.split()[0] if selection.split()[0] in ("Over", "Under") else selection
+    idx = spec.get(side)
+    if idx is None:
+        return None, None
+    for source, cols in spec["sets"]:
+        if all(c in row.index and pd.notna(row[c]) for c in cols):
+            try:
+                return devig(*[float(row[c]) for c in cols])[idx], source
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+    return None, None
 
 
 def settle_open_picks(open_picks: pd.DataFrame):
