@@ -24,11 +24,16 @@ COLS = ["logged_at", "match_date", "league", "fixture", "market",
 
 
 def collect(run_all, days):
+    seen = set()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     out = []
     for i in range(days):
         d = date.today() + timedelta(days=i)
-        rows, _ = run_all(d, model_only=False)
+        rows, notes = run_all(d, model_only=False)
+        for n in notes or []:
+            if n not in seen:
+                seen.add(n)
+                print(f"  note ({d}): {n}")
         if rows is None or rows.empty:
             continue
         r = rows[rows["odds"].notna() & (rows["prob_source"] == "model")]
