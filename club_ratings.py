@@ -175,7 +175,49 @@ ALIASES = {
     "tranmere rovers": ["Tranmere"],
     "bristol rovers": ["Bristol Rovers"],
     "forest green rovers": ["Forest Green"],
+    "fc copenhagen": ["Kobenhavn", "Copenhagen"],
+    "olympique lyonnais": ["Lyon"],
+    "olympique marseille": ["Marseille"],
+    "heart of midlothian": ["Hearts"],
+    "stade brestois": ["Brest"],
+    "stade brestois 29": ["Brest"],
+    "bk hacken": ["Hacken"],
+    "bodo glimt": ["Bodoe Glimt", "Bodo Glimt"],
+    "fk bodo glimt": ["Bodoe Glimt", "Bodo Glimt"],
+    "kairat almaty": ["Kairat"],
+    "pafos fc": ["Pafos"],
+    "fc pafos": ["Pafos"],
+    "sc braga": ["Braga", "Sporting Braga"],
+    "az alkmaar": ["AZ"],
+    "lech poznan": ["Lech"],
+    "legia warsaw": ["Legia"],
+    "dynamo kyiv": ["Dynamo Kyiv", "Dynamo Kiev"],
+    "ludogorets razgrad": ["Ludogorets"],
+    "bsc young boys": ["Young Boys"],
+    "raków czestochowa": ["Rakow"],
+    "rakow czestochowa": ["Rakow"],
+    "mainz 05": ["Mainz"],
+    "1 fc heidenheim": ["Heidenheim"],
+    "1 fc union berlin": ["Union Berlin"],
+    "1 fc koln": ["Koeln", "Koln"],
+    "fc st pauli": ["St Pauli"],
+    "hamburger sv": ["Hamburg"],
 }
+
+# Club-type prefixes/suffixes that differ between sources ("SSC Napoli" vs
+# "Napoli"). Only used as a LAST resort, after exact and alias matches.
+_NOISE = {"fc", "afc", "sc", "ssc", "as", "ac", "vfl", "vfb", "tsg", "rc", "ogc", "rsc",
+          "krc", "kaa", "kv", "bsc", "hnk", "nk", "fk", "sk", "if", "bk", "cf", "cd", "ud",
+          "ca", "sv", "fsv", "us", "ss", "stade", "1", "calcio", "fc", "afc", "club",
+          "city", "town", "united", "county", "rovers", "athletic"}
+_KEEP = {"city", "town", "united", "county", "rovers", "athletic"}   # not stripped: they separate clubs
+
+
+def _bare(name):
+    toks = re.sub(r"[^a-z0-9 ]", " ", unicodedata.normalize("NFKD", str(name))
+                  .encode("ascii", "ignore").decode().lower()).split()
+    toks = [t for t in toks if not (t in _NOISE and t not in _KEEP)]
+    return "".join(toks)
 
 
 def find_elo(name, elo_map):
@@ -191,6 +233,12 @@ def find_elo(name, elo_map):
         if _key(cand) in keys:
             c = keys[_key(cand)]
             return elo_map[c], c
+    bare = {}
+    for c in elo_map:                       # a bare key shared by two clubs is ambiguous: skip it
+        bare.setdefault(_bare(c), []).append(c)
+    hit = bare.get(_bare(name))
+    if hit and len(hit) == 1 and _bare(name):
+        return elo_map[hit[0]], hit[0]
     m = match_team(name, list(elo_map))
     if m:
         return elo_map[m], m

@@ -23,6 +23,37 @@ COLS = ["logged_at", "match_date", "league", "fixture", "market",
         "benchmark", "book"]
 
 
+def preflight():
+    """Free call (costs no credits): is the key accepted and how many credits
+    are left? Prints the answer so a failed run says WHY. Returns True to go on."""
+    import requests
+    from env_config import ODDS_API_KEY
+    if not ODDS_API_KEY:
+        print("✗ No Odds API key found. Put ODDS_API_KEY=... in the .env file in this folder.")
+        return False
+    try:
+        r = requests.get("https://api.the-odds-api.com/v4/sports/",
+                         params={"apiKey": ODDS_API_KEY}, timeout=20)
+    except Exception as e:
+        print(f"✗ Couldn't reach the Odds API: {e}")
+        return False
+    left, used = r.headers.get("x-requests-remaining"), r.headers.get("x-requests-used")
+    if r.status_code == 401:
+        print("✗ The Odds API rejected the key (401). Check .env — is it the NEW key?")
+        return False
+    if r.status_code == 429 or (left is not None and float(left) <= 0):
+        print("✗ Out of Odds API credits (usage limit reached). Credits come back when "
+              "your plan renews; or set ODDS_REGIONS = \"uk\" in football_core.py to use half as many.")
+        return False
+    if r.status_code != 200:
+        print(f"✗ Odds API returned {r.status_code}: {r.text[:150]}")
+        return False
+    print(f"✓ Odds API key OK — {left} credits left ({used} used this period).")
+    if left is not None and float(left) < 150:
+        print("  ⚠ Fewer than 150 left: one 3-day run can use that many. Try: python3 log_odds.py 1")
+    return True
+
+
 def collect(run_all, days):
     seen = set()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
@@ -57,11 +88,14 @@ def append(new, path=LOG):
 
 
 if __name__ == "__main__":
+    if not preflight():
+        raise SystemExit(1)
     from football_core import run_all
     days = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     df = collect(run_all, days)
     if df.empty:
-        print("No priced selections found — nothing logged.")
+        print("No priced selections found — nothing logged. Read the 'note' lines above for why "
+              "(no games that day, an API error, or no team ratings).")
     else:
         total = append(df)
         print(f"Logged {len(df)} prices across {df.fixture.nunique()} fixtures "

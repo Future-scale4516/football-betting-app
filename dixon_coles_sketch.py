@@ -57,11 +57,17 @@ def match_log_likelihood(params, fixtures, teams):
 DEFAULT_XI = 0.0018   # Dixon & Coles' published decay rate
 
 
-def fit_league(fixtures, teams, reg_lambda=0.01, xi=DEFAULT_XI):
+def fit_league(fixtures, teams, reg_lambda=0.01, xi=DEFAULT_XI, goal_weight=0.5):
     """
     fixtures: results for ONE league. Each is either
         (home, away, home_goals, away_goals)                  — unweighted
     or  (home, away, home_goals, away_goals, days_before_now)  — time-decayed
+
+    A 7-tuple adds (xg_home, xg_away) — shot-implied goals (see
+    shot_goals.py). The Poisson part then fits goal_weight * real goals +
+    (1 - goal_weight) * shot-implied goals; the low-score correction still
+    uses the real scoreline. Fixtures without the extra fields behave
+    exactly as before.
 
     xi: time-decay rate. Each match is weighted exp(-xi * days_ago), so
     recent form counts for more. Only applies when fixtures carry a 5th
@@ -99,6 +105,13 @@ def fit_league(fixtures, teams, reg_lambda=0.01, xi=DEFAULT_XI):
     else:
         weights = np.ones(len(fixtures))
 
+    use_xg = bool(fixtures) and len(fixtures[0]) > 6
+    if use_xg:
+        xgh = np.array([f[5] for f in fixtures], dtype=float)
+        xga = np.array([f[6] for f in fixtures], dtype=float)
+        fit_h = goal_weight * hg + (1 - goal_weight) * xgh
+        fit_a = goal_weight * ag + (1 - goal_weight) * xga
+
     # Masks for the four scorelines Dixon-Coles corrects
     m00 = (hg == 0) & (ag == 0)
     m01 = (hg == 0) & (ag == 1)
@@ -114,7 +127,12 @@ def fit_league(fixtures, teams, reg_lambda=0.01, xi=DEFAULT_XI):
         lam_h = np.exp(attack[home_idx] + defence[away_idx] + home_adv)
         lam_a = np.exp(attack[away_idx] + defence[home_idx])
 
-        log_p = poisson.logpmf(hg, lam_h) + poisson.logpmf(ag, lam_a)
+        if use_xg:
+            # Poisson log-likelihood for fractional targets (the k! term is
+            # constant in the parameters, so it is dropped).
+            log_p = (fit_h * np.log(lam_h) - lam_h) + (fit_a * np.log(lam_a) - lam_a)
+        else:
+            log_p = poisson.logpmf(hg, lam_h) + poisson.logpmf(ag, lam_a)
 
         tau_vals = np.ones_like(lam_h)
         tau_vals[m00] = 1 - (lam_h[m00] * lam_a[m00] * rho)
@@ -135,12 +153,37 @@ def fit_league(fixtures, teams, reg_lambda=0.01, xi=DEFAULT_XI):
             "home_adv": params[2 * n], "rho": params[2 * n + 1]}
 
 
+def apply_level_correction(model, games, pseudo_games=20, avg_goals=2.7, bounds=(0.85, 1.25)):
+    """Scales the model's goal rates to THIS season's scoring level.
+
+    The fit blends last season with this one, so when scoring changes between
+    seasons the model lags it (backtest, 778 games: Over 2.5 predicted 52.3% vs
+    56.0% actual, BTTS 53.6% vs 57.6%; Serie A went from 2.43 to 3.11 goals a
+    game). games = this season's completed (home, away, home_goals, away_goals).
+    The factor is actual goals / goals the model expected in those games,
+    pulled toward 1 by `pseudo_games` imaginary average games so a league with
+    a handful of results isn't over-corrected. Stored as model["goal_scale"].
+    """
+    exp = act = 0.0
+    n = 0
+    for h, a, hg, ag in games:
+        if h in model["attack"] and a in model["attack"]:
+            exp += (np.exp(model["attack"][h] + model["defence"][a] + model["home_adv"])
+                    + np.exp(model["attack"][a] + model["defence"][h]))
+            act += hg + ag
+            n += 1
+    k = (act + pseudo_games * avg_goals) / (exp + pseudo_games * avg_goals) if n else 1.0
+    model["goal_scale"] = float(min(max(k, bounds[0]), bounds[1]))
+    return model
+
+
 def score_matrix(home, away, model, max_goals=8):
     """Full scoreline probability grid for one fixture.
     This single grid is what 1X2, O/U, handicap, and correct-score
     markets all get derived from — one model output, four markets."""
-    lam_h = np.exp(model["attack"][home] + model["defence"][away] + model["home_adv"])
-    lam_a = np.exp(model["attack"][away] + model["defence"][home])
+    scale = model.get("goal_scale", 1.0)
+    lam_h = scale * np.exp(model["attack"][home] + model["defence"][away] + model["home_adv"])
+    lam_a = scale * np.exp(model["attack"][away] + model["defence"][home])
 
     grid = np.zeros((max_goals + 1, max_goals + 1))
     for hg in range(max_goals + 1):

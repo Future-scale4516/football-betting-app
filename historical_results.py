@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from dixon_coles_sketch import fit_league, score_matrix, derive_markets
+from dixon_coles_sketch import fit_league, score_matrix, derive_markets, apply_level_correction
 from league_config import LEAGUES, SEASON, data_url
 from auto_settle import grade, find_closing_odds, closing_fair_prob
 from calibration import calibrate_markets
@@ -52,7 +52,11 @@ def _fit_as_of(league_name: str, target_date, results_df):
     teams = sorted({t for fx in fixtures for t in (fx[0], fx[1])})
     if len(teams) < 4 or len(fixtures) < 20:
         return None, "not enough prior data to fit a model yet"
-    return fit_league(fixtures, teams), None
+    model = fit_league(fixtures, teams)
+    if len(prior):
+        model = apply_level_correction(model, list(zip(
+            prior.HomeTeam, prior.AwayTeam, prior.FTHG.astype(int), prior.FTAG.astype(int))))
+    return model, None
 
 
 def build_historical_results(target_date, leagues,

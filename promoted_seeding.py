@@ -65,6 +65,7 @@ def seed_missing_teams(model: dict, league_name: str, missing_teams: list[str]) 
     seeded = {
         "attack": dict(model["attack"]), "defence": dict(model["defence"]),
         "home_adv": model["home_adv"], "rho": model["rho"],
+        "goal_scale": model.get("goal_scale", 1.0),
         "seed_method": dict(model.get("seed_method", {})),
     }
 

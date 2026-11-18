@@ -150,7 +150,7 @@ def _fetch_csv(url: str) -> pd.DataFrame:
         return pd.read_csv(io.StringIO(text), engine="python",
                             on_bad_lines="skip")
 
-from dixon_coles_sketch import fit_league, score_matrix, derive_markets
+from dixon_coles_sketch import fit_league, score_matrix, derive_markets, apply_level_correction
 from league_config import LEAGUES, TEAM_NAME_MAPS, data_url, normalise_name, SEASON
 from devig import devig
 from plausibility import check_plausibility
@@ -605,19 +605,28 @@ def fit_model_for_league(league_name: str, as_of_date: date = None):
         df = _fetch_csv(data_url(league_name))
 
     frames = [df]
+    this_season = None
     if as_of_date is not None:
         current = _read_current_season_snapshot(cfg["data_code"], as_of_date)
         if current is None:
             current, _ = _load_current_season_results(cfg["data_code"], as_of_date)
         if current is not None:
-            frames.append(current[(current["_date"] < as_of_date)
-                                  & current["FTHG"].notna() & current["FTAG"].notna()])
+            this_season = current[(current["_date"] < as_of_date)
+                                  & current["FTHG"].notna() & current["FTAG"].notna()]
+            frames.append(this_season)
 
     # Rows carry age (time-decay) and shot-implied goals — see shot_goals.py.
     fixtures = build_fit_rows(frames, reference_date)
 
     teams = sorted({t for fx in fixtures for t in (fx[0], fx[1])})
-    return fit_league(fixtures, teams)
+    model = fit_league(fixtures, teams)
+    # Scoring level of THIS season (the fit blends in last season's, which lags
+    # when scoring changes — see apply_level_correction).
+    if this_season is not None and len(this_season):
+        model = apply_level_correction(model, list(zip(
+            this_season.HomeTeam, this_season.AwayTeam,
+            this_season.FTHG.astype(int), this_season.FTAG.astype(int))))
+    return model
 
 
 ELO_FLAG = "Club-Elo model, not backtested"

@@ -160,6 +160,9 @@ def main():
     if not saved["elo"]:
         print("  ✗ clubelo: all attempts failed — UEFA/FA Cup games will show "
               "bookmaker prices only until this works")
+        print("    Workaround: open http://api.clubelo.com/" + date.today().isoformat() +
+              " in your browser (it is a CSV). If it loads, save it as data/clubelo.csv\n"
+              "    in this folder and push. The app uses that file as it is.")
 
     manifest = {
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
