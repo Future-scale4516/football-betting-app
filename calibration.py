@@ -49,18 +49,40 @@ IMPORTANT CAVEATS
 
 import numpy as np
 
-# Fitted on September 2026 results. Refit as the sample grows.
+# RESET TO 1.0 (no adjustment) on 28 Oct 2026, when the model moved to
+# shot-implied goals (shot_goals.py). The September values (1X2 1.75, BTTS
+# 3.13, O/U 4.10) were fitted to the older goals-only model. On the new
+# model, cross-validated temperature scaling no longer helps:
+#
+#     market     fitted T   CV loss with T   uncalibrated
+#     1X2        1.19       1.0448           1.0410
+#     O/U 2.5    1.28       0.6758           0.6735
+#     BTTS       1.26       0.6812           0.6797
+#
+# October's out-of-sample results had also shown the old values were by then
+# flattening the goals-only model too much.
+#
+# 24 Nov 2026 check (backtest.py, 804 games, 12 Sep - 14 Nov, current model with
+# the scoring-level correction, leave-one-week-out):
+#     market     fitted T   CV loss T=1   CV loss fitted T
+#     1X2        0.95       1.0051        1.0079   (worse)
+#     O/U 2.5    1.41       0.6767        0.6751   (-0.0016, within noise)
+#     BTTS       1.40       0.6820        0.6803   (-0.0017, within noise)
+#     O/U 1.5    1.02       0.5134        0.5159   (worse)
+# No market shows a gain worth the risk, so everything stays at 1.0.
+# Next review: after ~8 more weeks of games.
 CALIBRATION_T = {
-    "1X2": 1.75,
-    "BTTS": 3.13,
-    "O/U 2.5": 4.10,
-    "O/U 1.5": 4.10,   # no graded data yet — borrows the O/U 2.5 correction
+    "1X2": 1.0,
+    "BTTS": 1.0,
+    "O/U 2.5": 1.0,
+    "O/U 1.5": 1.0,
 }
 
-DEFAULT_T = 2.29       # global fit, for any market not listed above
+DEFAULT_T = 1.0
+
 _EPS = 1e-6
 
-CALIBRATION_FITTED_ON = "September 2026 (1,673 graded selections, 239 fixtures)"
+CALIBRATION_FITTED_ON = "1.0 for all markets; re-checked 24 Nov 2026 on 804 games, no gain from calibrating"
 
 
 def _logit(p):
