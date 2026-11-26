@@ -148,15 +148,21 @@ REFERENCE_LEAGUES = {
     "Super Lig":         {"code": "T1",  "format": "standard"},
     "Greek Super League": {"code": "G1",  "format": "standard"},
     "Scottish Premiership": {"code": "SC0", "format": "standard"},
-    "Austrian Bundesliga": {"code": "AUT", "format": "extra"},
-    "Swiss Super League": {"code": "SWZ", "format": "extra"},
-    "Danish Superliga":  {"code": "DNK", "format": "extra"},
-    "Eliteserien":       {"code": "NOR", "format": "extra"},
-    "Allsvenskan":       {"code": "SWE", "format": "extra"},
-    "Ekstraklasa":       {"code": "POL", "format": "extra"},
-    "Liga I":            {"code": "ROU", "format": "extra"},
-    "League of Ireland": {"code": "IRL", "format": "extra"},
-    "Veikkausliiga":     {"code": "FIN", "format": "extra"},
+    # "division" picks ONE division out of a country file. Switzerland's holds
+    # the Challenge League as well, and fitting two divisions as one league
+    # would be wrong: the clubs never play each other, so their ratings would
+    # sit on two unconnected scales averaged into one meaningless number.
+    # Matched after stripping spaces (several files carry both "Superliga" and
+    # "Superliga ").
+    "Austrian Bundesliga": {"code": "AUT", "format": "extra", "division": "Bundesliga"},
+    "Swiss Super League": {"code": "SWZ", "format": "extra", "division": "Super League"},
+    "Danish Superliga":  {"code": "DNK", "format": "extra", "division": "Superliga"},
+    "Eliteserien":       {"code": "NOR", "format": "extra", "division": "Eliteserien"},
+    "Allsvenskan":       {"code": "SWE", "format": "extra", "division": "Allsvenskan"},
+    "Ekstraklasa":       {"code": "POL", "format": "extra", "division": "Ekstraklasa"},
+    "Liga I":            {"code": "ROU", "format": "extra", "division": "Superliga"},
+    "League of Ireland": {"code": "IRL", "format": "extra", "division": "Premier Division"},
+    "Veikkausliiga":     {"code": "FIN", "format": "extra", "division": "Veikkausliiga"},
 }
 
 EXTRA_URL_TEMPLATE = "https://www.football-data.co.uk/new/{code}.csv"

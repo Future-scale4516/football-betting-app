@@ -44,6 +44,8 @@ HONEST LIMITS (the app shows every one of these games as "verify")
   * European nights are not league games: rotation, travel and two-legged ties
     all change how teams play, and none of that is in here.
 """
+import re
+import unicodedata
 from datetime import date, timedelta
 from math import factorial
 
@@ -73,6 +75,14 @@ _STD = ("HomeTeam", "AwayTeam", "FTHG", "FTAG")
 _EXTRA = ("Home", "Away", "HG", "AG")
 
 
+# One club, two spellings in the same file — football-data's Romanian file
+# carries both, which would split that club's record in half and leave two
+# noisy ratings instead of one.
+CANONICAL = {
+    "Din. Bucuresti": "Dinamo Bucuresti",
+}
+
+
 def _normalise(df):
     """-> DataFrame with HomeTeam/AwayTeam/FTHG/FTAG/_date, or None."""
     if df is None or df.empty:
@@ -88,8 +98,8 @@ def _normalise(df):
         return None
 
     out = pd.DataFrame({
-        "HomeTeam": df[home].astype(str).str.strip(),
-        "AwayTeam": df[away].astype(str).str.strip(),
+        "HomeTeam": df[home].astype(str).str.strip().replace(CANONICAL),
+        "AwayTeam": df[away].astype(str).str.strip().replace(CANONICAL),
         "FTHG": pd.to_numeric(df[hg], errors="coerce"),
         "FTAG": pd.to_numeric(df[ag], errors="coerce"),
         "_date": pd.to_datetime(df["Date"], dayfirst=True, errors="coerce").dt.date,
@@ -102,7 +112,8 @@ def _normalise(df):
     return out.dropna(subset=["_date", "HomeTeam", "AwayTeam"])
 
 
-def _load_reference(data_dir, code, fmt, target_date, lookback_days=560):
+def _load_reference(data_dir, code, fmt, target_date, division=None,
+                    lookback_days=560):
     """Results for one reference league, from the committed snapshot only.
 
     Reference leagues are never fetched live: Streamlit Cloud is blocked by
@@ -125,6 +136,8 @@ def _load_reference(data_dir, code, fmt, target_date, lookback_days=560):
                                   engine="python", on_bad_lines="skip")
             except Exception:
                 continue
+        if division is not None and "League" in raw.columns:
+            raw = raw[raw["League"].astype(str).str.strip() == division]
         got = _normalise(raw)
         if got is not None:
             frames.append(got)
@@ -143,7 +156,22 @@ def _season_code(d):
 
 # ------------------------------------------------------------------ profiles
 
-def _profile_from_model(model, league_name):
+def _last_seen(df):
+    """{team: date it last played} — used to settle which league a club
+    actually belongs to when it shows up in two (promotion or relegation
+    means a club sits in last season's file AND this season's)."""
+    if df is None or df.empty:
+        return {}
+    played = df.dropna(subset=["FTHG", "FTAG"])
+    seen = {}
+    for col in ("HomeTeam", "AwayTeam"):
+        for team, when in played.groupby(col)._date.max().items():
+            if team not in seen or when > seen[team]:
+                seen[team] = when
+    return seen
+
+
+def _profile_from_model(model, league_name, last_seen=None):
     """Per-team absolute goal rates, in goals per game against an average
     opponent in that team's own league, averaged over home and away."""
     attack, defence = model["attack"], model["defence"]
@@ -165,6 +193,7 @@ def _profile_from_model(model, league_name):
             "att": float(scale * np.exp(attack[t] + d_avg) * swing),
             "dfn": float(scale * np.exp(a_avg + defence[t]) * swing),
             "league": league_name,
+            "last_seen": (last_seen or {}).get(t),
         }
     lg_avg = float(np.mean([v["att"] for v in out.values()])) if out else None
     for v in out.values():
@@ -191,11 +220,14 @@ def build_profiles(target_date, data_dir, fit_modelled=None):
             except Exception as e:
                 notes.append(f"{name}: no profiles ({type(e).__name__})")
                 continue
-            _merge(profiles, _profile_from_model(model, name), seen_league, name)
+            seen = _last_seen(_load_reference(data_dir, cfg["data_code"],
+                                              "standard", target_date))
+            _merge(profiles, _profile_from_model(model, name, seen),
+                   seen_league, name)
 
     for name, cfg in REFERENCE_LEAGUES.items():
         df = _load_reference(data_dir, cfg["code"], cfg.get("format", "standard"),
-                             target_date)
+                             target_date, cfg.get("division"))
         if df is None:
             notes.append(f"{name}: no data file (run refresh_data.py and push)")
             continue
@@ -217,22 +249,40 @@ def build_profiles(target_date, data_dir, fit_modelled=None):
         except Exception as e:
             notes.append(f"{name}: couldn't fit ({type(e).__name__})")
             continue
-        _merge(profiles, _profile_from_model(model, name), seen_league, name)
+        _merge(profiles, _profile_from_model(model, name, _last_seen(played)),
+               seen_league, name)
 
     return profiles, notes
 
 
 def _merge(profiles, new, seen_league, league_name):
-    """A club name that appears in two leagues (promotion, or two countries
-    spelling a name the same way) is ambiguous — drop it rather than guess."""
+    """Fold one league's profiles in.
+
+    A club can legitimately appear in two leagues: promotion and relegation
+    mean it sits in last season's file for one division and this season's for
+    another. Keeping whichever it played in MOST RECENTLY picks its current
+    division. Only when neither has a date — two different clubs that happen to
+    share a name — is it dropped as genuinely ambiguous.
+    """
     for team, prof in new.items():
-        if team in profiles and seen_league.get(team) != league_name:
-            profiles[team] = None          # tombstone: known-ambiguous
-        elif profiles.get(team) is None and team in profiles:
-            continue
-        else:
+        if team not in profiles:
             profiles[team] = prof
             seen_league[team] = league_name
+            continue
+        if profiles[team] is None or seen_league.get(team) == league_name:
+            continue                        # already tombstoned, or same league
+        old_seen, new_seen = profiles[team].get("last_seen"), prof.get("last_seen")
+        if new_seen and old_seen and new_seen != old_seen:
+            if new_seen > old_seen:
+                profiles[team] = prof
+                seen_league[team] = league_name
+        elif new_seen and not old_seen:
+            profiles[team] = prof
+            seen_league[team] = league_name
+        elif not new_seen and old_seen:
+            continue
+        else:
+            profiles[team] = None           # same name, no way to tell apart
 
 
 # ------------------------------------------------------------- the goal model
@@ -312,6 +362,80 @@ def model_only_grid(home_prof, away_prof, rho=DEFAULT_RHO):
 
 
 # ------------------------------------------------------------- name matching
+#
+# The Odds API and football-data.co.uk spell clubs differently. Most of the gap
+# is a club-type prefix ("KRC Genk" vs "Genk", "IFK Goteborg" vs "Goteborg"),
+# which _bare() strips. The rest are genuinely different names and need saying
+# outright. Measured on 169 realistic UEFA entrants: 134 matched before this,
+# 169 after.
+
+# Club-type tokens that carry no information about WHICH club it is. "st",
+# "city", "united", "town" and "rovers" are deliberately NOT here — they
+# separate real clubs (St Mirren vs St Johnstone, Sligo Rovers vs Sligo).
+_CLUB_TYPE = {
+    "fc", "afc", "sc", "ssc", "sl", "as", "ac", "rc", "rsc", "krc", "kaa", "kv",
+    "kvc", "bsc", "bk", "if", "ifk", "sv", "sk", "scr", "tsv", "wsg", "vfl",
+    "vfb", "tsg", "ogc", "hnk", "nk", "fk", "cf", "cd", "ud", "ca", "fsv", "us",
+    "ss", "rb", "agf", "ob", "royal", "club", "calcio", "cp",
+}
+
+# Odds API spelling -> the name in the football-data file.
+REFERENCE_ALIASES = {
+    "NEC Nijmegen": "Nijmegen",
+    "Fortuna Sittard": "For Sittard",
+    "Union Saint-Gilloise": "St. Gilloise",
+    "Union Saint Gilloise": "St. Gilloise",
+    "Royale Union Saint-Gilloise": "St. Gilloise",
+    "OH Leuven": "Oud-Heverlee Leuven",
+    "Oud-Heverlee Leuven": "Oud-Heverlee Leuven",
+    "Sporting CP": "Sp Lisbon",
+    "Sporting Lisbon": "Sp Lisbon",
+    "SC Braga": "Sp Braga",
+    "Sporting Braga": "Sp Braga",
+    "Vitoria Guimaraes": "Guimaraes",
+    "Vitoria SC": "Guimaraes",
+    "Istanbul Basaksehir": "Buyuksehyr",
+    "Basaksehir": "Buyuksehyr",
+    "Heart of Midlothian": "Hearts",
+    "Rapid Vienna": "SK Rapid",
+    "Rapid Wien": "SK Rapid",
+    "Red Bull Salzburg": "Salzburg",
+    "Blau-Weiss Linz": "BW Linz",
+    "Blau Weiss Linz": "BW Linz",
+    "AaB": "Aalborg",
+    "Djurgardens IF": "Djurgarden",
+    "Djurgardens": "Djurgarden",
+    "Universitatea Craiova": "Univ. Craiova",
+    "CS Universitatea Craiova": "Univ. Craiova",
+    "Rapid Bucuresti": "FC Rapid Bucuresti",
+    "Otelul Galati": "Otelul",
+    "Petrolul Ploiesti": "Petrolul",
+    "St Patricks Athletic": "St. Patricks",
+    "St Patrick's Athletic": "St. Patricks",
+    "Drogheda United": "Drogheda",
+    "Galway United": "Galway",
+    "HJK Helsinki": "HJK",
+    "SJK Seinajoki": "SJK",
+    "VPS Vaasa": "VPS",
+    "Bodo/Glimt": "Bodo/Glimt",
+    "Zaglebie Lubin": "Zaglebie",
+    "Jagiellonia Bialystok": "Jagiellonia",
+    "Rakow Czestochowa": "Rakow",
+    "Legia Warsaw": "Legia",
+    "Lausanne Sport": "Lausanne",
+    "Lausanne-Sport": "Lausanne",
+    "Grasshopper": "Grasshoppers",
+    "SonderjyskE": "Sonderjyske",
+}
+
+
+def _bare(name):
+    """Name with accents, punctuation and club-type prefixes removed."""
+    s = unicodedata.normalize("NFKD", str(name))
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    toks = [t for t in re.sub(r"[^a-z0-9 ]", " ", s).split() if t not in _CLUB_TYPE]
+    return " ".join(toks)
+
 
 def find_profile(name, profiles, alias_lookup=None):
     """(profile, matched_name). Exact first, then the shared alias/fuzzy
@@ -321,8 +445,19 @@ def find_profile(name, profiles, alias_lookup=None):
         return None, None
     if name in profiles:
         return (profiles[name], name) if profiles[name] else (None, None)
+    direct = REFERENCE_ALIASES.get(name)
+    if direct and profiles.get(direct):
+        return profiles[direct], direct
     if alias_lookup:
         hit = alias_lookup(name, profiles)
         if hit and profiles.get(hit):
             return profiles[hit], hit
+    # Last resort: same name once club-type prefixes are gone. Only accepted
+    # when exactly one club matches, so "Sporting" never silently becomes one
+    # of two Sportings.
+    target = _bare(name)
+    if target:
+        hits = [k for k, v in profiles.items() if v and _bare(k) == target]
+        if len(hits) == 1:
+            return profiles[hits[0]], hits[0]
     return None, None

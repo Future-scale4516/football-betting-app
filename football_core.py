@@ -908,6 +908,7 @@ def _market_only_league(league, cfg, target_date):
     elo_map = load_elo(target_date) if cfg.get("elo_model") else None
     unmatched = set()
     no_profile = set()
+    fell_back = 0          # fixtures that got no model at all
 
     # Cross-league model first (cross_league.py): a real model read built from
     # each club's domestic scoring, anchored on the market's 1X2. Falls through
@@ -956,6 +957,7 @@ def _market_only_league(league, cfg, target_date):
                 continue
             unmatched.update(n for n, v in ((e["home_team"], elo_h),
                                             (e["away_team"], elo_a)) if v is None)
+        fell_back += 1
         rows.extend(_market_rows(fixture, league, odds_data, kickoff, started))
 
     if no_profile:
@@ -964,10 +966,14 @@ def _market_only_league(league, cfg, target_date):
             "those games show bookmaker prices only. Add that country to "
             "REFERENCE_LEAGUES if football-data covers it.")
 
+    # Only worth mentioning ClubElo when a game actually fell through to
+    # bookmaker prices — the cross-league model covers most of them now, and a
+    # warning about a missing file nothing needed reads like a fault.
     if cfg.get("elo_model"):
-        if not elo_map and rows:
-            notes.append(f"{league}: no club-rating snapshot (data/clubelo.csv) — "
-                         "showing bookmaker prices only. Run refresh_data.py and push.")
+        if not elo_map and fell_back:
+            notes.append(f"{league}: {fell_back} game(s) with no model — ClubElo's "
+                         "server is down, so there is no club-rating snapshot "
+                         "(data/clubelo.csv) to fall back on.")
         if unmatched:
             notes.append(f"{league}: no rating found for {', '.join(sorted(unmatched))} — "
                          "those games show bookmaker prices only.")
