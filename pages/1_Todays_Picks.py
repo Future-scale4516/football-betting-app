@@ -23,8 +23,12 @@ if model_only:
 with st.spinner("Fitting models and fetching fixtures..."):
     rows, notes = run_all(sel_date, model_only)
 
+# Coverage notes ("these clubs have no league data") are facts about what the
+# app can and can't model, not problems to fix — they get a quiet caption.
+# Anything else is still a warning.
+_QUIET = ("priced by the bookmakers only", "no results file", "only ")
 for n in notes:
-    st.warning(n)
+    (st.caption if any(q in n for q in _QUIET) else st.warning)(n)
 
 # Manual entry sits ABOVE the empty-check on purpose: it's the way out when
 # no data source has the day's games, so it has to be reachable exactly

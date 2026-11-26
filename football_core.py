@@ -960,20 +960,15 @@ def _market_only_league(league, cfg, target_date):
         fell_back += 1
         rows.extend(_market_rows(fixture, league, odds_data, kickoff, started))
 
-    if no_profile:
-        notes.append(
-            f"{league}: no domestic results for {', '.join(sorted(no_profile))} — "
-            "those games show bookmaker prices only. Add that country to "
-            "REFERENCE_LEAGUES if football-data covers it.")
-
-    # Only worth mentioning ClubElo when a game actually fell through to
-    # bookmaker prices — the cross-league model covers most of them now, and a
-    # warning about a missing file nothing needed reads like a fault.
-    if cfg.get("elo_model"):
-        if not elo_map and fell_back:
-            notes.append(f"{league}: {fell_back} game(s) with no model — ClubElo's "
-                         "server is down, so there is no club-rating snapshot "
-                         "(data/clubelo.csv) to fall back on.")
+    # One short line, not a wall. These are coverage facts, not faults: some
+    # countries have no published results file anywhere, so those games will
+    # always be market-only. Naming every club every night was noise.
+    if fell_back:
+        clubs = sorted(no_profile)
+        shown = ", ".join(clubs[:3])
+        more = f" and {len(clubs) - 3} others" if len(clubs) > 3 else ""
+        notes.append(f"{league}: {fell_back} game(s) priced by the bookmakers only — "
+                     f"no league data for {shown}{more}.")
         if unmatched:
             notes.append(f"{league}: no rating found for {', '.join(sorted(unmatched))} — "
                          "those games show bookmaker prices only.")

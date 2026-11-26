@@ -426,6 +426,32 @@ REFERENCE_ALIASES = {
     "Lausanne-Sport": "Lausanne",
     "Grasshopper": "Grasshoppers",
     "SonderjyskE": "Sonderjyske",
+    # Big-five-league clubs whose Odds API spelling carries a sponsor, city or
+    # "Olympique/Stade/Hellas" prefix that football-data drops. These matter
+    # because these are the clubs most likely to BE in a UEFA competition.
+    "Bayer Leverkusen": "Leverkusen",
+    "Borussia Monchengladbach": "M'gladbach",
+    "Borussia Moenchengladbach": "M'gladbach",
+    "Eintracht Frankfurt": "Ein Frankfurt",
+    "1. FC Koln": "FC Koln",
+    "1. FC Cologne": "FC Koln",
+    "FC Cologne": "FC Koln",
+    "Hamburger SV": "Hamburg",
+    "Atletico Madrid": "Ath Madrid",
+    "Atlético Madrid": "Ath Madrid",
+    "Athletic Bilbao": "Ath Bilbao",
+    "Rayo Vallecano": "Vallecano",
+    "Real Oviedo": "Oviedo",
+    "Hellas Verona": "Verona",
+    "Olympique Marseille": "Marseille",
+    "Olympique de Marseille": "Marseille",
+    "Olympique Lyonnais": "Lyon",
+    "Stade Rennais": "Rennes",
+    "Stade Rennes": "Rennes",
+    "Stade Brestois": "Brest",
+    "Stade Brestois 29": "Brest",
+    "Paris Saint Germain": "Paris SG",
+    "Paris Saint-Germain": "Paris SG",
 }
 
 
