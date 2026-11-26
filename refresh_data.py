@@ -32,7 +32,8 @@ from pathlib import Path
 import requests
 import pandas as pd
 
-from league_config import LEAGUES, SEASON
+from league_config import (LEAGUES, REFERENCE_LEAGUES, SEASON,
+                           EXTRA_URL_TEMPLATE)
 
 DATA_DIR = Path("data")
 BASE = "https://www.football-data.co.uk/mmz4281/{season}/{code}.csv"
@@ -77,8 +78,10 @@ def save_csv(text, path, label):
     except Exception:
         df = pd.read_csv(io.StringIO(text), engine="python", on_bad_lines="skip")
 
-    if "HomeTeam" not in df.columns:
-        print(f"  ✗ {label}: no HomeTeam column, got {list(df.columns)[:5]} — skipped")
+    # Reference leagues in the "extra" layout name the columns Home/Away
+    # instead of HomeTeam/AwayTeam — both are valid results files.
+    if "HomeTeam" not in df.columns and "Home" not in df.columns:
+        print(f"  ✗ {label}: no team columns, got {list(df.columns)[:5]} — skipped")
         return False
 
     path.write_text(text, encoding="utf-8")
@@ -91,7 +94,7 @@ def main():
     cur_season = current_season_code()
     print(f"Season codes — previous: {SEASON}, current: {cur_season}\n")
 
-    saved = {"previous": [], "current": [], "fixtures": False}
+    saved = {"previous": [], "current": [], "fixtures": False, "reference": []}
 
     print("Previous season (model training base):")
     for name, cfg in LEAGUES.items():
@@ -116,6 +119,33 @@ def main():
                 saved["current"].append(name)
         except Exception as e:
             print(f"  ✗ {name}: {type(e).__name__}")
+
+    # Reference leagues: results only, so clubs from these countries have a
+    # scoring profile when they appear in a UEFA competition. No odds calls,
+    # so these cost nothing beyond the download.
+    print("\nReference leagues (for UEFA competitions):")
+    ref_ok, ref_miss = [], []
+    for name, rcfg in REFERENCE_LEAGUES.items():
+        code, fmt = rcfg["code"], rcfg.get("format", "standard")
+        try:
+            if fmt == "extra":
+                text = fetch(EXTRA_URL_TEMPLATE.format(code=code))
+                ok = save_csv(text, DATA_DIR / f"X_{code}.csv", name)
+            else:
+                ok = False
+                for season in (SEASON, cur_season):
+                    text = fetch(BASE.format(season=season, code=code))
+                    ok = save_csv(text, DATA_DIR / f"{season}_{code}.csv",
+                                  f"{name} {season}") or ok
+            (ref_ok if ok else ref_miss).append(name)
+            if ok:
+                saved["reference"].append(name)
+        except Exception as e:
+            print(f"  ✗ {name}: {type(e).__name__}")
+            ref_miss.append(name)
+    if ref_miss:
+        print(f"  note: no file for {', '.join(ref_miss)} — clubs from those "
+              "countries will show bookmaker prices only.")
 
     print("\nUpcoming fixtures:")
     try:

@@ -152,13 +152,14 @@ def _fetch_csv(url: str) -> pd.DataFrame:
 
 from dixon_coles_sketch import fit_league, score_matrix, derive_markets, apply_level_correction
 from league_config import LEAGUES, TEAM_NAME_MAPS, data_url, normalise_name, SEASON
+from cross_league import build_profiles, anchored_grid, find_profile
 from devig import devig
 from plausibility import check_plausibility
 from traffic_light import classify
 from promoted_seeding import seed_missing_teams
 from env_config import require_api_key, ODDS_API_KEY as _ODDS_KEY
 from fixtures_source import fetch_events, parse_events, parse_fixture_lines
-from team_matching import match_fixture_names
+from team_matching import match_fixture_names, match_team
 from football_data_source import load_results as _load_current_season_results
 from calibration import calibrate_markets
 from shot_goals import build_fit_rows
@@ -630,6 +631,10 @@ def fit_model_for_league(league_name: str, as_of_date: date = None):
 
 
 ELO_FLAG = "Club-Elo model, not backtested"
+CROSS_FLAG = "Cross-league model (market-anchored), not backtested"
+# Flags that mean "this is a model, just not a tested one" — as opposed to
+# the original meaning of `seeded`, which was "this team has a guessed rating".
+MODEL_FLAGS = (ELO_FLAG, CROSS_FLAG)
 
 
 def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started=False):
@@ -641,8 +646,8 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
             tier, edge = "forecast", None
             # A guessed rating used to look identical to a fitted one here;
             # the seeded check below only ever ran when odds existed.
-            if seeded == ELO_FLAG:
-                reason = f"{ELO_FLAG} — no bookmaker price for this market"
+            if seeded in MODEL_FLAGS:
+                reason = f"{seeded} — no bookmaker price for this market"
             else:
                 reason = (f"No odds, and a provisional rating — {seeded}" if seeded
                           else "No odds available — model forecast only")
@@ -651,8 +656,16 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
             status, reason = check_plausibility(model_prob, market_prob, edge)
             if seeded:
                 tier = "verify"
-                reason = (f"{ELO_FLAG} — compare with the bookmaker price" if seeded == ELO_FLAG
-                          else f"Provisionally-seeded team — {seeded}")
+                if seeded == CROSS_FLAG and market == "1X2":
+                    # The anchored grid is SOLVED to reproduce the market's
+                    # home:away split, so a 1X2 "edge" here is only our draw
+                    # rate disagreeing — never a view on who wins.
+                    reason = (f"{CROSS_FLAG} — who wins is taken FROM the market, "
+                              "so only the draw differs")
+                elif seeded in MODEL_FLAGS:
+                    reason = f"{seeded} — compare with the bookmaker price"
+                else:
+                    reason = f"Provisionally-seeded team — {seeded}"
             else:
                 band = "O/U 2.5" if market.startswith("O/U") else market
                 tier = classify(band, edge) if status == "ok" else "verify"
@@ -691,11 +704,40 @@ def _evaluate(fixture, league, markets, odds_data, seeded, kickoff=None, started
             add(key, f"Over {line}", ou["over"])
             add(key, f"Under {line}", ou["under"])
 
-    # BTTS is model-only — see the note in fetch_odds(). No market price
-    # means no edge and no traffic-light tier; these stay "forecast".
+    # The bulk odds feed carries no BTTS price (see fetch_odds), but the 1X2
+    # and Over 2.5 prices between them pin down both teams' goal rates, so the
+    # market's OWN view of BTTS can be solved out of them. That gives the model
+    # something to be compared against instead of standing alone.
+    #
+    # It is a derived number, not a price you can bet at, and on 804 domestic
+    # games the implied figure beat the model (log loss 0.676 vs 0.682 — and
+    # the model was no better than simply predicting the average). So these
+    # rows are never green: the comparison is for information, not a tip.
     b = markets["BTTS"]
-    add("BTTS", "Yes", b["yes"])
-    add("BTTS", "No", b["no"])
+    t25 = odds_data.get("totals_2.5")
+    implied = None
+    if h2h and t25:
+        try:
+            implied = implied_btts(h2h["_fair"][0], h2h["_fair"][1], t25["_fair"][0])
+        except Exception:
+            implied = None
+    if implied is not None:
+        for sel, mp, ip in (("Yes", b["yes"], implied), ("No", b["no"], 1 - implied)):
+            rows.append({
+                "league": league, "fixture": fixture, "market": "BTTS",
+                "selection": sel, "model_prob": mp, "market_prob": ip,
+                "odds": None, "edge": mp - ip, "tier": "verify",
+                "reason": ("Model vs the BTTS probability implied by the 1X2 and "
+                           "Over 2.5 prices — there is no BTTS price in the feed, "
+                           "and on past games the implied figure was the better "
+                           "forecast, so treat a gap as a flag to check, not value."),
+                "kickoff": kickoff, "started": started,
+                "seeded": bool(seeded), "prob_source": "model",
+                "benchmark": h2h.get("_bench"), "book": None,
+            })
+    else:
+        add("BTTS", "Yes", b["yes"])
+        add("BTTS", "No", b["no"])
 
     return rows
 
@@ -826,6 +868,27 @@ def _market_rows(fixture, league, odds_data, kickoff, started):
     return rows
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def cross_league_profiles(target_date):
+    """Goal-rate profiles for every club the app holds results for — the nine
+    modelled leagues plus the reference leagues in league_config. Cached
+    because it fits ~20 leagues."""
+    return build_profiles(target_date, DATA_DIR, fit_modelled=fit_model_for_league)
+
+
+def _all_aliases():
+    """Every Odds-API -> football-data spelling the app already knows, pooled
+    across leagues, so "Paris Saint Germain" finds "Paris SG" in a UEFA game."""
+    pooled = {}
+    for mapping in TEAM_NAME_MAPS.values():
+        pooled.update(mapping)
+    return pooled
+
+
+def _profile_matcher(name, profiles):
+    return match_team(name, [k for k, v in profiles.items() if v], _all_aliases())
+
+
 def _market_only_league(league, cfg, target_date):
     """Returns (rows, notes) for a competition with no model."""
     notes = []
@@ -844,6 +907,18 @@ def _market_only_league(league, cfg, target_date):
     rows = []
     elo_map = load_elo(target_date) if cfg.get("elo_model") else None
     unmatched = set()
+    no_profile = set()
+
+    # Cross-league model first (cross_league.py): a real model read built from
+    # each club's domestic scoring, anchored on the market's 1X2. Falls through
+    # to ClubElo, then to bookmaker prices alone, whenever a club isn't covered.
+    profiles = {}
+    if cfg.get("cross_league", True):
+        try:
+            profiles, pnotes = cross_league_profiles(target_date)
+            notes.extend(f"{league}: {n}" for n in pnotes if "no data file" not in n)
+        except Exception as e:
+            notes.append(f"{league}: cross-league profiles unavailable ({type(e).__name__})")
     for e in events:
         if _event_date(e) != target_date:
             continue
@@ -854,6 +929,21 @@ def _market_only_league(league, cfg, target_date):
             odds_data[f"totals_{line}"] = _quote(
                 e, "totals", {"Over": "over", "Under": "under"}, line=line)
         fixture = f"{e['home_team']} vs {e['away_team']}"
+
+        h2h = odds_data.get("h2h")
+        if profiles and h2h:
+            p_home, _ = find_profile(e["home_team"], profiles, _profile_matcher)
+            p_away, _ = find_profile(e["away_team"], profiles, _profile_matcher)
+            if p_home and p_away:
+                fair = h2h["_fair"]
+                grid = anchored_grid(p_home, p_away, fair[0], fair[2])
+                if grid is not None:
+                    markets = calibrate_markets(derive_markets(grid))
+                    rows.extend(_evaluate(fixture, league, markets, odds_data,
+                                          CROSS_FLAG, kickoff=kickoff, started=started))
+                    continue
+            no_profile.update(n for n, v in ((e["home_team"], p_home),
+                                             (e["away_team"], p_away)) if v is None)
 
         if elo_map:
             elo_h, _ = find_elo(e["home_team"], elo_map)
@@ -867,6 +957,12 @@ def _market_only_league(league, cfg, target_date):
             unmatched.update(n for n, v in ((e["home_team"], elo_h),
                                             (e["away_team"], elo_a)) if v is None)
         rows.extend(_market_rows(fixture, league, odds_data, kickoff, started))
+
+    if no_profile:
+        notes.append(
+            f"{league}: no domestic results for {', '.join(sorted(no_profile))} — "
+            "those games show bookmaker prices only. Add that country to "
+            "REFERENCE_LEAGUES if football-data covers it.")
 
     if cfg.get("elo_model"):
         if not elo_map and rows:

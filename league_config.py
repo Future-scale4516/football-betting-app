@@ -125,6 +125,43 @@ LEAGUES = {
 }
 
 
+# ---- REFERENCE LEAGUES ------------------------------------------------
+#
+# Domestic leagues we hold results for ONLY so that their clubs have a
+# scoring profile when they turn up in a UEFA competition (see
+# cross_league.py). They get no picks page and no odds call, so they cost
+# nothing in Odds API credits.
+#
+# "standard" = the usual football-data.co.uk season file (mmz4281/<season>/).
+# "extra"    = football-data.co.uk/new/<CODE>.csv, one multi-season file per
+#              country, with Home/Away/HG/AG column names and no shot counts.
+#              Saved locally as data/X_<CODE>.csv.
+#
+# Not every UEFA country is here — football-data publishes no file for
+# Czechia, Croatia, Serbia, Cyprus, Israel, Ukraine or Kazakhstan, among
+# others. A club from one of those still falls back to bookmaker prices.
+# refresh_data.py prints which of these actually downloaded.
+REFERENCE_LEAGUES = {
+    "Eredivisie":        {"code": "N1",  "format": "standard"},
+    "Belgian Pro League": {"code": "B1",  "format": "standard"},
+    "Primeira Liga":     {"code": "P1",  "format": "standard"},
+    "Super Lig":         {"code": "T1",  "format": "standard"},
+    "Greek Super League": {"code": "G1",  "format": "standard"},
+    "Scottish Premiership": {"code": "SC0", "format": "standard"},
+    "Austrian Bundesliga": {"code": "AUT", "format": "extra"},
+    "Swiss Super League": {"code": "SWZ", "format": "extra"},
+    "Danish Superliga":  {"code": "DNK", "format": "extra"},
+    "Eliteserien":       {"code": "NOR", "format": "extra"},
+    "Allsvenskan":       {"code": "SWE", "format": "extra"},
+    "Ekstraklasa":       {"code": "POL", "format": "extra"},
+    "Liga I":            {"code": "ROU", "format": "extra"},
+    "League of Ireland": {"code": "IRL", "format": "extra"},
+    "Veikkausliiga":     {"code": "FIN", "format": "extra"},
+}
+
+EXTRA_URL_TEMPLATE = "https://www.football-data.co.uk/new/{code}.csv"
+
+
 def modelled_leagues():
     """Leagues the Dixon-Coles model covers (i.e. with results data)."""
     return [name for name, cfg in LEAGUES.items() if cfg.get("data_code")]

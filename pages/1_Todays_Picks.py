@@ -118,9 +118,12 @@ with tab_match:
         "is**: in a September check the flagged disagreements lost money "
         "(about -7% ROI) and the market was the more accurate forecast. "
         "🟢 strong disagreement · 🟡 disagreement · 🔵 check manually "
-        "(very large gap, or a provisionally-seeded team) · ⚪ in line with "
-        "the market · 📊 UEFA competition: the bookmakers' own probability, "
-        "no model behind it."
+        "(very large gap, a provisionally-seeded team, or an untested model "
+        "such as the cross-league one used for UEFA nights) · ⚪ in line with "
+        "the market · 📊 the bookmakers' own probability, no model behind it. "
+        "In a UEFA game the model takes **who wins from the market** and only "
+        "the goals from its own ratings, so a 1X2 gap there is just the draw "
+        "rate — the BTTS and Over/Under numbers are the real model view."
     )
     mr = rows[rows["market"] == "1X2"]
 
